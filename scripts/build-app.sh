@@ -2,10 +2,12 @@
 set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
-swift build -c release --disable-sandbox --disable-index-store --triple arm64-apple-macosx
-swift build -c release --disable-sandbox --disable-index-store --triple x86_64-apple-macosx
-ARM_DIR="$PROJECT_DIR/.build/arm64-apple-macosx/release"
-INTEL_DIR="$PROJECT_DIR/.build/x86_64-apple-macosx/release"
+ARM_SCRATCH="$PROJECT_DIR/.build/guardian-arm64"
+INTEL_SCRATCH="$PROJECT_DIR/.build/guardian-x86_64"
+swift build -c release --disable-sandbox --disable-index-store --triple arm64-apple-macosx --scratch-path "$ARM_SCRATCH"
+swift build -c release --disable-sandbox --disable-index-store --triple x86_64-apple-macosx --scratch-path "$INTEL_SCRATCH"
+ARM_DIR="$ARM_SCRATCH/out/Products/Release"
+INTEL_DIR="$INTEL_SCRATCH/out/Products/Release"
 APP_DIR="$PROJECT_DIR/dist/Account Guardian.app"
 mkdir -p "$PROJECT_DIR/dist"
 STAGING_DIR="$(mktemp -d "$PROJECT_DIR/dist/.guardian-build.XXXXXX")"
@@ -20,7 +22,11 @@ iconutil -c icns "$PROJECT_DIR/.build/Guardian.iconset" -o "$STAGED_APP/Contents
 cp "$PROJECT_DIR/.build/Guardian.iconset/icon_256x256@2x.png" "$STAGED_APP/Contents/Resources/GuardianMascot.png"
 cp "$PROJECT_DIR/.build/Guardian.iconset/icon_512x512@2x.png" "$PROJECT_DIR/dist/guardian-icon-preview.png"
 chmod 755 "$STAGED_APP/Contents/MacOS/AccountGuardian"
-codesign --force --deep --sign - "$STAGED_APP"
+if [ "${GUARDIAN_WITH_FILTER:-0}" = "1" ]; then
+    python3 scripts/package-filter.py "$STAGED_APP"
+else
+    codesign --force --deep --sign - "$STAGED_APP"
+fi
 codesign --verify --deep --strict "$STAGED_APP"
 if [ -e "$APP_DIR" ]; then
     mv "$APP_DIR" "$STAGING_DIR/previous.app"

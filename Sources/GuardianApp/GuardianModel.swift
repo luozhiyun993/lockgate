@@ -10,6 +10,10 @@ struct GuardianEvent: Identifiable, Codable {
 
 @MainActor
 final class GuardianModel: ObservableObject {
+    let networkFilter = NetworkFilterController()
+    @Published var savingSettings = false
+    private var filterApproved = false
+    private var filterTask: Task<Void, Never>?
     @Published var state: ProtectionState
     @Published var local: LocalHealth = .unknown("正在读取系统代理与路由状态…")
     @Published private(set) var processHealth: ProcessHealth = .unknown("正在读取受保护进程…")
@@ -50,6 +54,14 @@ final class GuardianModel: ObservableObject {
         }
         record("应用已打开。监控处于观察模式，启用保护后才会执行急停。")
         persist()
+        filterTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                if !self.recovering { await self.networkFilter.poll(policy: self.filterPolicy) }
+                self.persist()
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        }
         localTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -70,6 +82,7 @@ final class GuardianModel: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.revision += 1
+                self.filterApproved = false
                 self.exit = .unknown("系统刚刚唤醒，重新检测出口。")
                 self.local = .unknown("系统刚刚唤醒，重新检测代理。")
                 self.processHealth = .unknown("系统刚刚唤醒，重新检查受保护进程。")
@@ -101,6 +114,7 @@ final class GuardianModel: ObservableObject {
     var statusTitle: String {
         if state.lockedReason != nil { return "保护已锁定" }
         if !state.enabled { return "观察模式" }
+        if state.settings.filterPreferences.enabled, !networkFilter.permitsLaunch(policy: filterPolicy) { return "网络阻断未就绪" }
         switch decision {
         case .allow, .warn: return "保护运行中"
         case .wait(let reason):
@@ -113,6 +127,7 @@ final class GuardianModel: ObservableObject {
     var statusDetail: String {
         if let reason = state.lockedReason { return reason }
         if !state.enabled { return "正在检测环境。启用保护后，异常将触发急停。" }
+        if state.settings.filterPreferences.enabled, !networkFilter.permitsLaunch(policy: filterPolicy) { return networkFilter.status }
         switch decision {
         case .allow: return "启动门禁已就绪，正在持续检查代理、出口与进程。"
         case .warn(let reason), .wait(let reason), .trip(let reason): return reason
@@ -144,6 +159,8 @@ final class GuardianModel: ObservableObject {
 
     func persist() {
         state.heartbeat = Date()
+        state.filterReadyUntil = networkFilter.permitsLaunch(policy: filterPolicy) && state.settings.filterPreferences.enabled
+            ? Date().addingTimeInterval(4) : nil
         do { try store.save(state) }
         catch {
             savingError = "无法保存保护状态：\(error.localizedDescription)"
@@ -230,6 +247,8 @@ final class GuardianModel: ObservableObject {
     private func applyDecision() {
         let wasLocked = state.lockedReason
         state.observe(decision)
+        if state.enabled, state.lockedReason == nil, decision.mayLaunch { filterApproved = true }
+        if state.lockedReason != nil { filterApproved = false }
         if wasLocked == nil, let reason = state.lockedReason {
             record("已锁定：\(reason)")
             notice = "已触发保护：\(reason)"
@@ -239,22 +258,54 @@ final class GuardianModel: ObservableObject {
 
     func enableProtection() {
         state.enabled = true
+        filterApproved = false
         record("用户启用保护。锁定期间将持续终止选中的 Claude 进程，包括外部启动。")
         applyDecision()
         persist()
-        Task { await refreshLocal(); await refreshExit() }
+        Task {
+            if state.settings.filterPreferences.enabled { _ = await networkFilter.enable(policy: filterPolicy) }
+            await refreshLocal()
+            await refreshExit()
+        }
     }
 
     func pauseProtection() {
+        Task { _ = await stopProtection() }
+    }
+
+    func stopProtection() async -> Bool {
+        guard await networkFilter.disable() else { notice = networkFilter.status; return false }
         state.enabled = false
+        filterApproved = false
         revision += 1
-        record("用户暂停保护；不再执行急停。已有锁定保持。")
+        record("用户停止保护；系统过滤已停用或未安装。已有锁定保持。")
         persist()
+        return true
     }
 
     func saveSettings(_ settings: GuardianSettings) {
+        var settings = settings
+        var preferences = settings.filterPreferences
+        preferences.addresses = preferences.addresses.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { !$0.isEmpty }
+        settings.filterPreferences = preferences
         if let error = settings.validationError { notice = error; return }
+        guard !savingSettings else { return }
+        savingSettings = true
+        Task {
+            defer { savingSettings = false }
+            if !settings.filterPreferences.enabled, state.settings.filterPreferences.enabled || networkFilter.systemEnabled {
+                guard await networkFilter.disable() else { notice = networkFilter.status; return }
+            }
+            applySettings(settings)
+            if settings.filterPreferences.enabled { _ = await networkFilter.enable(policy: filterPolicy) }
+            await refreshLocal()
+            await refreshExit()
+        }
+    }
+
+    private func applySettings(_ settings: GuardianSettings) {
         state.settings = settings
+        filterApproved = false
         revision += 1
         exit = .unknown("设置已更改，正在重新检测。")
         processHealth = .unknown("保护对象设置已更新，正在重新检查受保护进程。")
@@ -264,7 +315,24 @@ final class GuardianModel: ObservableObject {
         persist()
         record("保护规则已保存；已有锁定不会自动解除。")
         notice = savingError ?? "设置已保存。"
-        Task { await refreshLocal(); await refreshExit() }
+    }
+
+    var filterPolicy: FilterPolicySnapshot {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let cli = ProcessInspector.claudeCommand()?.resolvingSymlinksInPath().path
+        return FilterPolicySnapshot(ownerUID: getuid(),
+            blocked: !state.enabled || state.lockedReason != nil || !filterApproved,
+            protectDesktop: state.settings.protectDesktop, protectCLI: state.settings.protectCLI,
+            desktopRoots: ["/Applications/Claude.app/Contents/", "\(home)/Applications/Claude.app/Contents/"],
+            cliPaths: cli.map { [$0] } ?? [], preferences: state.settings.filterPreferences)
+    }
+
+    func retryNetworkFilter() {
+        guard state.settings.filterPreferences.enabled else {
+            notice = "请先保存网络阻断设置，再重试安装。"
+            return
+        }
+        Task { _ = await networkFilter.enable(policy: filterPolicy) }
     }
 
     func recheck() {
@@ -277,6 +345,8 @@ final class GuardianModel: ObservableObject {
         let oldLocalRevision = localRevision
         await refreshLocal()
         await refreshExit()
+        await networkFilter.poll(policy: filterPolicy)
+        persist()
         guard revision == capturedRevision, localRevision > oldLocalRevision,
               Date().timeIntervalSince(lastNetworkUpdate) < 2 else {
             return .wait("本次检查未完成或设置发生变化，请重试。")
@@ -295,6 +365,21 @@ final class GuardianModel: ObservableObject {
                 notice = "尚不能解除锁定：请等待检测完成，并确保网络、出口、进程及设置全部通过。"
                 return
             }
+            if state.settings.filterPreferences.enabled {
+                var candidate = filterPolicy
+                candidate.blocked = false
+                let capturedRevision = revision
+                await networkFilter.poll(policy: candidate)
+                guard capturedRevision == revision, state.enabled, decision.mayLaunch, !stopping,
+                      savingError == nil, networkFilter.permitsLaunch(policy: candidate) else {
+                    await networkFilter.poll(policy: filterPolicy)
+                    notice = "网络过滤器未确认放行，保持锁定：\(networkFilter.status)"
+                    return
+                }
+            }
+            guard state.recover(decision) else { return }
+            filterApproved = true
+            await networkFilter.poll(policy: filterPolicy)
             persist()
             notice = "检查通过，已解除锁定。不会自动重新打开 Claude。"
             record(notice)
@@ -319,6 +404,39 @@ final class GuardianModel: ObservableObject {
         let remaining = await Task.detached { ProcessInspector.inspect(settings: settings) }.value
         guard state.settings == settings else { return }
         updateProcessHealth(remaining)
+    }
+
+    func emergencyStopAllClaude() {
+        guard !stopping else { return }
+        stopping = true
+        let settings = state.settings
+        Task {
+            defer { stopping = false }
+            let inspection = await Task.detached {
+                ProcessInspector.inspectAllClaude(settings: settings)
+            }.value
+            updateProcessHealth(inspection)
+            if let reason = inspection.failureReason {
+                record("全量急停检查提示：\(reason)")
+            }
+            let targets = inspection.targets
+            guard !targets.isEmpty else {
+                let message = inspection.failureReason ?? "未发现已核实的 Claude Desktop / Code 进程。"
+                notice = message
+                record("全量急停：\(message)")
+                return
+            }
+            let report = await Task.detached { await ProcessStopper.stop(targets) }.value
+            let remaining = await Task.detached {
+                ProcessInspector.inspectAllClaude(settings: settings)
+            }.value
+            updateProcessHealth(remaining)
+            let message = "全量急停完成：已终止 \(report.stopped) 个进程，失败 \(report.failed) 个。"
+            notice = report.inspectionFailed
+                ? "\(message) 无法完成进程复核，请手动检查。"
+                : message
+            record("\(message)\(report.inspectionFailed ? " 无法完成进程复核，请手动检查。" : "")")
+        }
     }
 
     func realStopTest() {

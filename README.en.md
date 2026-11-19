@@ -1,5 +1,13 @@
 # Account Guardian
 
+## Experimental network blocking
+
+Settings now includes an opt-in network-blocking switch, default Claude addresses, custom domain / wildcard / IP rules, and a separate option to cover other applications accessing those addresses. The switch alone does not mean filtering is active: managed launches require a fresh acknowledgement from the system extension. Ordinary ad-hoc builds show that filtering is unavailable.
+
+The signed extension is designed to block selected Claude processes' outbound flows, including local proxy connections, after a confirmed unsafe proxy or exit. Recovery remains manual. Probe timeouts retain a previously approved connection state. Closing the window retains protection; normal pause or quit disables filtering first. Losing the host heartbeat for approximately eight seconds blocks identified protected flows. Close existing Claude sessions before first activation.
+
+Source compilation and policy tests are verified; **signed system-extension interception has not been validated on a real system**. Unknown process identities, unavailable hostnames, pre-existing connections and proxy forwarding limit coverage. See [network filter setup and acceptance tests](docs/network-filter.md) for signing prerequisites and limitations.
+
 [简体中文](README.md) · [English](README.en.md)
 
 <img src="assets/icon.png" width="128" alt="Account Guardian friendly padlock icon">
@@ -33,6 +41,8 @@ For development, use `swift run AccountGuardian`. The packaged app is ad-hoc sig
 The app starts in **observation mode**: it checks the environment without terminating Claude. In **Exit & Rules (出口与规则)**, confirm the target country code and optional pinned IP, save your settings, then enable protection from **Overview (保护概览)**.
 
 **Check Now (立即检查)** appears only on Overview and refreshes the real environment. The four simulations on the test page do not change live protection state.
+
+Overview also provides **Emergency-stop all Claude (一键急停全部 Claude)**. After confirmation, it terminates all verified Claude Desktop / Code processes owned by the current user, regardless of the selected protection toggles. It never kills an unresolved process by name alone; save your work first.
 
 Closing the window leaves the menu bar app running. Quitting stops monitoring and process enforcement. Reopening returns to observation mode while retaining any existing lockout. This version does not install a system daemon or enable launch at login.
 
@@ -125,7 +135,7 @@ The source repository excludes `.build/`, `dist/`, personal protection settings,
 
 Settings and lock state are stored in `~/Library/Application Support/AgentAccountGuardian/state.json`. Events are stored in `events.json` in the same directory, with up to 200 entries. The directory uses mode 0700 and files use 0600. Settings contain the expected IP and last observed IP; events do not record account credentials, subscription URLs, or complete process arguments. The app does not read Claude passwords, cookies, or Keychain items.
 
-This is process-level protection, not a firewall. Packets may be sent between a fault and process termination. Protection is unavailable when the app is not running, is forcibly stopped, or the system is asleep. Continuing to run during an unknown network state is an intentional availability trade-off, not a guarantee against direct connections.
+Ordinary builds retain process-level protection. Packets may be sent between a fault and process termination. Without an active signed filter extension, protection is unavailable when the app is not running, is forcibly stopped, or the system is asleep. The optional experimental filter has the limitations described above. Continuing to run during an unknown network state is an intentional availability trade-off, not a guarantee against direct connections.
 
 Cloudflare's country classification may differ from the service provider's. A lookup validates only that request's path, and two route probes do not validate every Claude domain. This version does not comprehensively check DNS, STUN/WebRTC, IPv6 bypass, or all proxy routing rules. It does not implement account switching, fingerprint changes, timezone changes, or a root daemon. IP pinning is not a substitute for network isolation.
 

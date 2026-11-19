@@ -12,6 +12,7 @@ let package = Package(
         .target(name: "GuardianCore"),
         .executableTarget(name: "GuardianApp", dependencies: ["GuardianCore"]),
         .executableTarget(name: "GuardianDiagnostics", dependencies: ["GuardianCore"]),
+        .executableTarget(name: "GuardianFilter", dependencies: ["GuardianCore"]),
         .testTarget(name: "GuardianCoreTests", dependencies: ["GuardianCore"])
     ]
 )

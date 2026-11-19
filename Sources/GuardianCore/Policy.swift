@@ -9,11 +9,17 @@ public struct GuardianSettings: Codable, Equatable {
     public var protectCLI = true
     public var desktopApplicationPath = ""
     public var cliExecutablePath = ""
+    public var networkFilter: NetworkFilterPreferences?
+
+    public var filterPreferences: NetworkFilterPreferences {
+        get { networkFilter ?? NetworkFilterPreferences() }
+        set { networkFilter = newValue }
+    }
 
     public init() {}
 
     enum CodingKeys: String, CodingKey {
-        case country, pinnedIP, pinEnabled, protectDesktop, protectCLI, desktopApplicationPath, cliExecutablePath
+        case country, pinnedIP, pinEnabled, protectDesktop, protectCLI, desktopApplicationPath, cliExecutablePath, networkFilter
     }
 
     public init(from decoder: Decoder) throws {
@@ -25,9 +31,11 @@ public struct GuardianSettings: Codable, Equatable {
         protectCLI = try values.decode(Bool.self, forKey: .protectCLI)
         desktopApplicationPath = try values.decodeIfPresent(String.self, forKey: .desktopApplicationPath) ?? ""
         cliExecutablePath = try values.decodeIfPresent(String.self, forKey: .cliExecutablePath) ?? ""
+        networkFilter = try values.decodeIfPresent(NetworkFilterPreferences.self, forKey: .networkFilter)
     }
 
     public var validationError: String? {
+        if let error = filterPreferences.validationError { return error }
         if country.count != 2 || !country.utf8.allSatisfy({ (65...90).contains($0) }) {
             return "目标地区需要填写两位大写国家代码，例如 JP。"
         }
@@ -214,6 +222,7 @@ public struct ProtectionState: Codable {
     public var lockedReason: String?
     public var heartbeat = Date.distantPast
     public var lastIP: String?
+    public var filterReadyUntil: Date?
 
     public init() {}
 
@@ -231,6 +240,7 @@ public struct ProtectionState: Codable {
     public func permitsLaunch(_ decision: Decision, now: Date = Date()) -> Bool {
         enabled && lockedReason == nil && decision.mayLaunch
             && now.timeIntervalSince(heartbeat) >= -5 && now.timeIntervalSince(heartbeat) < 8
+            && (!settings.filterPreferences.enabled || (filterReadyUntil.map { $0 > now && $0.timeIntervalSince(now) <= 5 } ?? false))
     }
 }
 

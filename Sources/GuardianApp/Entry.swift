@@ -30,6 +30,7 @@ struct GuardianApp: App {
             GuardianView(model: model)
                 .frame(minWidth: 980, minHeight: 720)
                 .modifier(MainWindowReopenHandler(delegate: appDelegate))
+                .onAppear { appDelegate.stopForTermination = { await model.stopProtection() } }
         }
         .defaultSize(width: 1080, height: 800)
         .commands {
@@ -53,7 +54,6 @@ struct GuardianApp: App {
             alert.addButton(withTitle: "退出并停止保护")
             guard alert.runModal() == .alertSecondButtonReturn else { return }
         }
-        model.pauseProtection()
         NSApplication.shared.terminate(nil)
     }
 }

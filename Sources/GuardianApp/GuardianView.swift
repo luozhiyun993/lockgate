@@ -25,6 +25,7 @@ struct GuardianView: View {
     @State private var confirmEnable = false
     @State private var confirmPause = false
     @State private var confirmRealTest = false
+    @State private var confirmEmergencyStop = false
     private let accent = Color(red: 0.13, green: 0.37, blue: 0.78)
 
     private var mascot: NSImage {
@@ -104,6 +105,12 @@ struct GuardianView: View {
         } message: {
             Text("会终止当前用户选中的 Claude Desktop / Code 进程，并持续阻止其运行，直到检查通过并手动解锁。请先保存工作。")
         }
+        .alert("一键急停全部 Claude？", isPresented: $confirmEmergencyStop) {
+            Button("取消", role: .cancel) {}
+            Button("立即终止全部 Claude", role: .destructive) { model.emergencyStopAllClaude() }
+        } message: {
+            Text("会终止当前用户所有已核实的 Claude Desktop / Code 进程，不受保护对象勾选限制。未保存的工作可能丢失；无法核实身份的进程不会仅凭名称终止。")
+        }
         .alert("Account Guardian", isPresented: Binding(get: { !model.notice.isEmpty }, set: { if !$0 { model.notice = "" } })) {
             Button("知道了") { model.notice = "" }
         } message: { Text(model.notice) }
@@ -172,6 +179,12 @@ struct GuardianView: View {
                         .background(statusColor.opacity(0.10), in: Capsule()).foregroundStyle(statusColor)
                 }
                 HStack(spacing: 12) {
+                    Button { confirmEmergencyStop = true } label: {
+                        Label("一键急停全部 Claude", systemImage: "octagon.fill")
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.red)
+                    .disabled(model.stopping)
                     if model.state.enabled {
                         Button("暂停保护") { confirmPause = true }
                     } else {
@@ -251,6 +264,10 @@ struct GuardianView: View {
                 Text("PAC、仅 SOCKS 和无法确认的配置会阻止新的受管启动。系统代理模式下，Claude Code 需从本应用启动以继承检测到的代理。")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            card("网络阻断", icon: "network") {
+                NetworkFilterSettingsView(preferences: $draft.filterPreferences,
+                    controller: model.networkFilter, retry: model.retryNetworkFilter)
+            }
             card("指定出口 IP", icon: "pin") {
                 Toggle("启用严格 IP 匹配", isOn: $draft.pinEnabled)
                 HStack {
@@ -284,7 +301,7 @@ struct GuardianView: View {
             }
             HStack {
                 Button("保存并重新检查") { model.saveSettings(draft) }.buttonStyle(.borderedProminent)
-                    .disabled(draft.validationError != nil || model.stopping)
+                    .disabled(draft.validationError != nil || model.stopping || model.savingSettings)
                 if let error = draft.validationError { Text(error).font(.caption).foregroundStyle(.orange) }
                 Spacer()
             }

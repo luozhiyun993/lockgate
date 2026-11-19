@@ -244,6 +244,13 @@ public enum ProcessInspector {
                         arguments: arguments, lifecycle: lifecycle, workingDirectory: workingDirectory)
     }
 
+    public static func inspectAllClaude(settings: GuardianSettings) -> ProcessInspection {
+        var settings = settings
+        settings.protectDesktop = true
+        settings.protectCLI = true
+        return inspect(settings: settings)
+    }
+
     public static func protectedProcesses(settings: GuardianSettings) -> [ProcessIdentity]? {
         let result = inspect(settings: settings)
         return result.failureReason == nil ? result.targets : nil

@@ -4,6 +4,20 @@ import SwiftUI
 @MainActor
 final class GuardianAppDelegate: NSObject, NSApplicationDelegate {
     var openMainWindow: (() -> Void)?
+    var stopForTermination: (() async -> Bool)?
+    private var terminating = false
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let stopForTermination else { return .terminateNow }
+        guard !terminating else { return .terminateCancel }
+        terminating = true
+        Task {
+            let stopped = await stopForTermination()
+            terminating = false
+            sender.reply(toApplicationShouldTerminate: stopped)
+        }
+        return .terminateLater
+    }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         guard let openMainWindow else { return true }
