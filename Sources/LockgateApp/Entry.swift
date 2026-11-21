@@ -30,7 +30,13 @@ struct LockgateApp: App {
             LockgateView(model: model)
                 .frame(minWidth: 980, minHeight: 720)
                 .modifier(MainWindowReopenHandler(delegate: appDelegate))
-                .onAppear { appDelegate.stopForTermination = { await model.stopProtection() } }
+                .onAppear {
+                    appDelegate.stopForTermination = {
+                        guard await model.stopProtection() else { return false }
+                        await model.proxy.shutdown()
+                        return true
+                    }
+                }
         }
         .defaultSize(width: 1080, height: 800)
         .commands {
@@ -46,10 +52,11 @@ struct LockgateApp: App {
     }
 
     private func confirmQuit() {
-        if model.state.enabled {
+        if model.state.enabled || model.proxy.running {
             let alert = NSAlert()
-            alert.messageText = "退出后将停止持续监控和急停保护"
-            alert.informativeText = "当前 Claude 可以继续运行。异常锁定会保存，下次打开后仍需要手动恢复。"
+            alert.messageText = model.proxy.running ? "退出后将停止内置代理和保护" : "退出后将停止持续监控和急停保护"
+            alert.informativeText = (model.proxy.running ? "内置代理会停止，系统代理会恢复为关闭，依赖它的连接将断开。" : "")
+                + "当前 Claude 可以继续运行。异常锁定会保存，下次打开后仍需要手动恢复。"
             alert.addButton(withTitle: "取消")
             alert.addButton(withTitle: "退出并停止保护")
             guard alert.runModal() == .alertSecondButtonReturn else { return }
@@ -67,6 +74,8 @@ struct MenuContents: View {
         Divider()
         Text("网络：\(model.networkStatus.summary)")
         Text("进程：\(model.processStatus.summary)")
+        Divider()
+        ProxyMenuItems(proxy: model.proxy)
         Divider()
         Button("打开控制面板") {
             openWindow(id: "main")

@@ -240,7 +240,7 @@ public struct ProtectionState: Codable {
     public func permitsLaunch(_ decision: Decision, now: Date = Date()) -> Bool {
         enabled && lockedReason == nil && decision.mayLaunch
             && now.timeIntervalSince(heartbeat) >= -5 && now.timeIntervalSince(heartbeat) < 8
-            && (!settings.filterPreferences.enabled || (filterReadyUntil.map { $0 > now && $0.timeIntervalSince(now) <= 5 } ?? false))
+            && (!(settings.filterPreferences.enabled || settings.filterPreferences.gateEnabled) || (filterReadyUntil.map { $0 > now && $0.timeIntervalSince(now) <= 5 } ?? false))
     }
 }
 

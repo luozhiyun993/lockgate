@@ -1,6 +1,30 @@
 # Lockgate
 
-## Experimental network blocking
+## Built-in proxy
+
+Lockgate bundles the mihomo core. Add a subscription on the **订阅** page, then start the proxy, pick nodes and choose how traffic is captured on the **代理** page.
+
+- **Subscriptions**: full Clash / mihomo profiles keep their own proxy groups and rules; node-list subscriptions (share links, usually base64) get generated groups and a rule set that proxies everything except loopback and private ranges. Manual and scheduled updates; the active profile is hot-reloaded.
+- **Managed settings**: listening ports, LAN access, the controller, TUN and DNS are always set by Lockgate regardless of the subscription. The mixed port (default 17890) and the controller listen on 127.0.0.1 only; the controller uses a random port and secret on every start. DNS always uses Lockgate's fake-ip configuration.
+- **System proxy**: points HTTP / HTTPS / SOCKS of every enabled network service at the built-in proxy and bypasses only loopback and private ranges. It is turned off again when the proxy stops or the app quits.
+- **TUN mode**: captures all system traffic. The first activation asks for an administrator password once and installs the core at `/Library/Application Support/Lockgate/core/mihomo` as a root-owned setuid binary executable only by the admin group. Core upgrades require re-authorisation; the authorisation can be removed from the app.
+- **Live monitor**: the **实时监控** page refreshes every second with total up / down rates and a one-minute chart, a per-outbound summary of open connections (which node, direct, or rejected), and a connection list showing destination, source process, matched rule, outbound chain and rate, with filtering, search and disconnect. Only traffic passing through the built-in proxy is counted, nothing is written to disk, and process names are best-effort.
+- **Core upgrades**: downloaded from the official mihomo GitHub release for the local architecture, SHA256-verified and test-run before replacing the previous core. The bundled version can be restored at any time.
+- **Interaction with the guard**: while protection is enabled, starting or stopping the proxy, toggling system proxy / TUN or changing the port is a network-path change and trips the lock. If the core exits unexpectedly the system proxy keeps pointing at its port, so traffic fails closed instead of going direct.
+
+The setuid core means members of the local admin group can run mihomo as root without a password; this is the trade-off for password-free TUN without a Developer ID. Core lifecycle, subscriptions, node selection, hot reload and port changes are verified; **system proxy and TUN capture have not yet been accepted on a real machine**. Bundled third-party components and licences are listed in [packaging/THIRD-PARTY.md](packaging/THIRD-PARTY.md).
+
+## Network blocking
+
+**出口与规则 → 网络阻断** offers two independent mechanisms that share one address list.
+
+### Blocking through the built-in proxy
+
+Works in ordinary builds with no system extension or signing. Lockgate prepends a reject / pass switch group and matching address rules to the mihomo configuration. While protection is enabled, connections to the listed addresses are rejected by the core whenever the guard is locked or has not yet passed its checks, and existing connections are dropped; they are passed on to the subscription's own rules only after the checks pass and the lock is released manually. Pausing protection stops the blocking. The switch defaults to reject, so a core start, restart or reload stays closed until Lockgate confirms again, and managed launches require the core to confirm the pass state. The proxy is fixed to rule mode while this is enabled.
+
+Limits: matching is by address for every application using the built-in proxy, not per process. Only traffic that passes through the built-in proxy is covered (it must be running with system proxy or TUN enabled), nothing is enforced after Lockgate or the core exits (in TUN mode traffic then goes direct), and applications that resolve names themselves and connect by IP are not matched by domain rules.
+
+### Experimental blocking through a system extension
 
 Settings now includes an opt-in network-blocking switch, default Claude addresses, custom domain / wildcard / IP rules, and a separate option to cover other applications accessing those addresses. The switch alone does not mean filtering is active: managed launches require a fresh acknowledgement from the system extension. Ordinary ad-hoc builds show that filtering is unavailable.
 

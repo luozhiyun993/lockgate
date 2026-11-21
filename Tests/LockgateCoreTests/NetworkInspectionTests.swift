@@ -65,13 +65,18 @@ final class NetworkInspectionTests: XCTestCase {
     }
 
     func testProtectedDomainBypassRulesBlockAuthorization() {
-        for exception in ["*.anthropic.com", ".claude.ai", "www.cloudflare.com", "*", "10.0.0.0/8"] {
+        for exception in ["*.anthropic.com", ".claude.ai", "www.cloudflare.com", "*", "160.79.104.0/23", "0.0.0.0/0",
+                          "10.0.0.0/4", "198.18.0.0/15", "8.8.8.8", "198.18.0.5"] {
             var settings = proxySettings
             settings["ExceptionsList"] = [exception]
             guard case .unsupported = SystemProxyParser.parse(settings) else { return XCTFail("Unsafe exception: \(exception)") }
         }
         var settings = proxySettings
         settings["ExceptionsList"] = ["<local>", "*.local", "example.org"]
+        XCTAssertEqual(SystemProxyParser.parse(settings), .https(endpoint))
+        // 只覆盖本机和私有网段的绕过条目不可能绕过 Claude 的公网域名，内置代理会设置它们。
+        settings["ExceptionsList"] = ["localhost", "127.0.0.1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+                                      "169.254.0.0/16", "192.168.1.10", "::1"]
         XCTAssertEqual(SystemProxyParser.parse(settings), .https(endpoint))
     }
 

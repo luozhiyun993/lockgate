@@ -22,6 +22,12 @@ iconutil -c icns "$PROJECT_DIR/.build/Lockgate.iconset" -o "$STAGED_APP/Contents
 cp "$PROJECT_DIR/.build/Lockgate.iconset/icon_256x256@2x.png" "$STAGED_APP/Contents/Resources/LockgateMascot.png"
 cp "$PROJECT_DIR/.build/Lockgate.iconset/icon_512x512@2x.png" "$PROJECT_DIR/dist/lockgate-icon-preview.png"
 chmod 755 "$STAGED_APP/Contents/MacOS/Lockgate"
+bash scripts/fetch-core.sh
+mkdir -p "$STAGED_APP/Contents/Resources/core/geo"
+cp "$PROJECT_DIR/.build/core/mihomo" "$STAGED_APP/Contents/Resources/core/mihomo"
+cp "$PROJECT_DIR/.build/core/geo/"* "$STAGED_APP/Contents/Resources/core/geo/"
+cp packaging/THIRD-PARTY.md "$STAGED_APP/Contents/Resources/core/THIRD-PARTY.md"
+codesign --force --sign "${LOCKGATE_SIGN_IDENTITY:--}" "$STAGED_APP/Contents/Resources/core/mihomo"
 if [ "${LOCKGATE_WITH_FILTER:-0}" = "1" ]; then
     python3 scripts/package-filter.py "$STAGED_APP"
 else

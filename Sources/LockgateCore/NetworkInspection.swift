@@ -112,7 +112,7 @@ public enum SystemProxyParser {
             }
             for exception in values["ExceptionsList"] as? [String] ?? [] {
                 let pattern = exception.lowercased().trimmingCharacters(in: .whitespaces)
-                if pattern == "<local>" { continue }
+                if pattern == "<local>" || SystemProxyPlan.isLocalBypass(pattern) { continue }
                 if pattern.contains("/") || IPAddress.normalized(pattern) != nil || (pattern.contains("*") && !pattern.hasSuffix(".local")) {
                     return .unsupported("系统代理包含 IP / 网段或通配绕过规则，暂不能确认目标是否被绕过。")
                 }
