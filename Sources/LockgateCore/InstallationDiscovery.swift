@@ -157,7 +157,7 @@ public enum InstallationDiscovery {
                 [0xca, 0xfe, 0xba, 0xbf]].contains(magic)
     }
 
-    public static func discover(settings: GuardianSettings = GuardianSettings(),
+    public static func discover(settings: LockgateSettings = LockgateSettings(),
                                 processes: [ProcessIdentity] = [],
                                 environment: [String: String] = ProcessInfo.processInfo.environment,
                                 home: URL = FileManager.default.homeDirectoryForCurrentUser) -> ClaudeInstallations {

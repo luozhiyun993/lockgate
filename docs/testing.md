@@ -10,7 +10,7 @@
 2. 在「出口与规则」检查目标地区（默认 JP）。观察当前 IP 和地区；不要将示例地址当成真实出口。
 3. 在「保护测试」依次运行四种模拟。预期网络超时不急停但启动被阻止；其他三种异常进入模拟锁定。网络恢复后保持锁定，手动恢复才解锁。
 4. 查看「事件记录」，确认能看到本机状态与出口检测结果，日志中没有账号凭据。
-5. 用 `swift test --disable-sandbox` 执行自动测试；用 `swift run guardian-diagnostics --network` 只读检查真实环境。
+5. 用 `swift test --disable-sandbox` 执行自动测试；用 `swift run lockgate-diagnostics --network` 只读检查真实环境。
 
 ## 需要用户操作的真实验证
 

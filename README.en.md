@@ -1,4 +1,4 @@
-# Account Guardian
+# Lockgate
 
 ## Experimental network blocking
 
@@ -10,7 +10,7 @@ Source compilation and policy tests are verified; **signed system-extension inte
 
 [简体中文](README.md) · [English](README.en.md)
 
-<img src="assets/icon.png" width="128" alt="Account Guardian friendly padlock icon">
+<img src="assets/icon.png" width="128" alt="Lockgate friendly padlock icon">
 
 A native macOS desktop app that checks the proxy environment used by Claude without depending on a particular proxy client. It provides launch checks, continuous monitoring, process termination on confirmed faults, persistent lockout, and manual recovery.
 
@@ -33,10 +33,10 @@ Requires macOS 13 or later, Swift 5.9 or later, and a network tool providing a s
 
 ```sh
 bash scripts/build-app.sh
-open "dist/Account Guardian.app"
+open "dist/Lockgate.app"
 ```
 
-For development, use `swift run AccountGuardian`. The packaged app is ad-hoc signed locally and is not notarized. The packaging script builds both arm64 and x86_64 and creates a universal Apple Silicon / Intel application.
+For development, use `swift run Lockgate`. The packaged app is ad-hoc signed locally and is not notarized. The packaging script builds both arm64 and x86_64 and creates a universal Apple Silicon / Intel application.
 
 The app starts in **observation mode**: it checks the environment without terminating Claude. In **Exit & Rules (出口与规则)**, confirm the target country code and optional pinned IP, save your settings, then enable protection from **Overview (保护概览)**.
 
@@ -84,25 +84,25 @@ Unresolved Claude candidates are reported separately and block new managed launc
 
 Claude Desktop and Claude Code can be selected independently. Desktop discovery uses the product bundle ID, system application registration, and outer app metadata from running executables; directory and app name are not fixed. Monitoring and launching share the discovery result. CLI discovery checks the current PATH, common native/Homebrew/npm locations, and nvm/asdf/mise/fnm/Volta layouts, keeping multiple native versions observable. npm scripts are identified through the product package name and `bin.claude` declaration rather than a fixed `cli.js` filename; common Node options and scripts relative to the process working directory are supported.
 
-For shell aliases, unresolved shims or other layouts, enter a trusted `.app` or CLI command path in **Exit & Rules → Installation Location**; absolute paths and `~/` are accepted, while empty fields use automatic discovery. Product IDs, package names, and bounded installer layouts remain matching conventions, not signature authentication. Shell shims are not themselves termination targets. macOS access restrictions and unknown runtime options can still cause misses; use `guardian-diagnostics --list-installations --list-processes` to verify coverage.
+For shell aliases, unresolved shims or other layouts, enter a trusted `.app` or CLI command path in **Exit & Rules → Installation Location**; absolute paths and `~/` are accepted, while empty fields use automatic discovery. Product IDs, package names, and bounded installer layouts remain matching conventions, not signature authentication. Shell shims are not themselves termination targets. macOS access restrictions and unknown runtime options can still cause misses; use `lockgate-diagnostics --list-installations --list-processes` to verify coverage.
 
-Desktop launches use the system application API. Claude Code launches in Terminal and checks the guardian heartbeat, lock, settings, local proxy, and exit again immediately before execution. Terminal determines the initial working directory. For a particular project, change directories in Terminal and run:
+Desktop launches use the system application API. Claude Code launches in Terminal and checks the lockgate heartbeat, lock, settings, local proxy, and exit again immediately before execution. Terminal determines the initial working directory. For a particular project, change directories in Terminal and run:
 
 ```sh
-"/your/path/Account Guardian.app/Contents/MacOS/AccountGuardian" --guarded-cli
+"/your/path/Lockgate.app/Contents/MacOS/Lockgate" --guarded-cli
 ```
 
 While protection is enabled and locked, matching processes launched elsewhere are also terminated after detection. Direct launches bypass the pre-launch gate and the original CLI remains available. Emergency termination sends TERM first, then KILL to remaining processes whose identity still matches. Work in progress may be interrupted.
 
 ## Testing
 
-Use `swift run guardian-diagnostics --list-processes` to inspect matched PIDs and local executable paths. It does not terminate processes or print session arguments.
+Use `swift run lockgate-diagnostics --list-processes` to inspect matched PIDs and local executable paths. It does not terminate processes or print session arguments.
 
 ```sh
 swift test --disable-sandbox
 bash scripts/verify-discovery.sh
-swift run guardian-diagnostics --list-installations
-swift run guardian-diagnostics --network
+swift run lockgate-diagnostics --list-installations
+swift run lockgate-diagnostics --network
 ```
 
 Tests cover country/IP policy, unknown network states, persistent locks, manual recovery, stale observations, process matching, and identity revalidation. The automated termination test only terminates a disposable `/bin/sleep` child that the test itself created.
@@ -119,10 +119,10 @@ Additional acceptance steps and verification results are in [docs/testing.md](do
 ## Project structure
 
 ```text
-Sources/GuardianCore/          Inspection, process matching, policy, persistence
-Sources/GuardianApp/           SwiftUI interface, monitoring, protected launches
-Sources/GuardianDiagnostics/   Read-only diagnostic CLI
-Tests/GuardianCoreTests/       Policy and process termination tests
+Sources/LockgateCore/          Inspection, process matching, policy, persistence
+Sources/LockgateApp/           SwiftUI interface, monitoring, protected launches
+Sources/LockgateDiagnostics/   Read-only diagnostic CLI
+Tests/LockgateCoreTests/       Policy and process termination tests
 scripts/                      App packaging and icon rendering
 packaging/                    macOS bundle metadata
 assets/                       README icon
@@ -133,7 +133,7 @@ The source repository excludes `.build/`, `dist/`, personal protection settings,
 
 ## Data and limitations
 
-Settings and lock state are stored in `~/Library/Application Support/AgentAccountGuardian/state.json`. Events are stored in `events.json` in the same directory, with up to 200 entries. The directory uses mode 0700 and files use 0600. Settings contain the expected IP and last observed IP; events do not record account credentials, subscription URLs, or complete process arguments. The app does not read Claude passwords, cookies, or Keychain items.
+Settings and lock state are stored in `~/Library/Application Support/Lockgate/state.json`; on first run, existing settings and lock state are copied from the former `AgentAccountGuardian` directory. Events are stored in `events.json` in the same directory, with up to 200 entries. The directory uses mode 0700 and files use 0600. Settings contain the expected IP and last observed IP; events do not record account credentials, subscription URLs, or complete process arguments. The app does not read Claude passwords, cookies, or Keychain items.
 
 Ordinary builds retain process-level protection. Packets may be sent between a fault and process termination. Without an active signed filter extension, protection is unavailable when the app is not running, is forcibly stopped, or the system is asleep. The optional experimental filter has the limitations described above. Continuing to run during an unknown network state is an intentional availability trade-off, not a guarantee against direct connections.
 

@@ -1,5 +1,5 @@
 import SwiftUI
-import GuardianCore
+import LockgateCore
 
 struct NetworkFilterSettingsView: View {
     @Binding var preferences: NetworkFilterPreferences

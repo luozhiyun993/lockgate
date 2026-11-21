@@ -1,6 +1,6 @@
 import AppKit
 import Foundation
-import GuardianCore
+import LockgateCore
 import NetworkExtension
 import Security
 import SystemExtensions
@@ -22,7 +22,7 @@ private final class FilterReply {
 
 @MainActor
 final class NetworkFilterController: NSObject, ObservableObject, OSSystemExtensionRequestDelegate {
-    static let extensionID = "dev.local.agent-account-guardian.filter"
+    static let extensionID = "dev.local.lockgate.filter"
     @Published private(set) var status = "网络阻断未开启"
     @Published private(set) var isEffective = false
     @Published private(set) var busy = false
@@ -36,7 +36,7 @@ final class NetworkFilterController: NSObject, ObservableObject, OSSystemExtensi
     private var generation = 0
 
     var readiness: String? {
-        guard let team = Bundle.main.object(forInfoDictionaryKey: "GuardianTeamID") as? String,
+        guard let team = Bundle.main.object(forInfoDictionaryKey: "LockgateTeamID") as? String,
               team.range(of: "^[A-Z0-9]{10}$", options: .regularExpression) != nil else {
             return "当前构建未配置 Developer ID 与系统扩展权限，网络阻断尚不可用。开关可保存偏好，但不会产生网络拦截。"
         }
@@ -107,7 +107,7 @@ final class NetworkFilterController: NSObject, ObservableObject, OSSystemExtensi
                 configuration.filterDataProviderBundleIdentifier = Self.extensionID
                 configuration.vendorConfiguration = ["initialPolicy": try JSONEncoder().encode(policy)]
                 manager.providerConfiguration = configuration
-                manager.localizedDescription = "Account Guardian · Claude 网络保护"
+                manager.localizedDescription = "Lockgate · Claude 网络保护"
                 manager.isEnabled = true
                 try await save()
                 try await load()
@@ -149,7 +149,7 @@ final class NetworkFilterController: NSObject, ObservableObject, OSSystemExtensi
                     Command.run("/usr/bin/systemextensionsctl", ["list"])
                 }.value
                 if installed.status == 0, !installed.output.contains(Self.extensionID) {
-                    status = "系统未安装 Account Guardian 网络过滤扩展"
+                    status = "系统未安装 Lockgate 网络过滤扩展"
                     isEffective = false
                     acknowledgedPolicy = nil
                     return true
@@ -186,19 +186,19 @@ final class NetworkFilterController: NSObject, ObservableObject, OSSystemExtensi
 
     private func send(policy: FilterPolicySnapshot) async -> Bool {
         let requestGeneration = generation
-        guard let team = Bundle.main.object(forInfoDictionaryKey: "GuardianTeamID") as? String,
-              let service = Bundle.main.object(forInfoDictionaryKey: "GuardianFilterService") as? String,
+        guard let team = Bundle.main.object(forInfoDictionaryKey: "LockgateTeamID") as? String,
+              let service = Bundle.main.object(forInfoDictionaryKey: "LockgateFilterService") as? String,
               let data = try? JSONEncoder().encode(policy) else { return false }
         if connection == nil {
             let connection = NSXPCConnection(machServiceName: service, options: .privileged)
             connection.setCodeSigningRequirement("anchor apple generic and identifier \"\(Self.extensionID)\" and certificate leaf[subject.OU] = \"\(team)\"")
-            connection.remoteObjectInterface = NSXPCInterface(with: GuardianFilterIPC.self)
+            connection.remoteObjectInterface = NSXPCInterface(with: LockgateFilterIPC.self)
             connection.resume()
             self.connection = connection
         }
         let response: Data? = await withCheckedContinuation { continuation in
             let reply = FilterReply(continuation)
-            guard let remote = connection?.remoteObjectProxyWithErrorHandler({ _ in reply.finish(nil) }) as? GuardianFilterIPC else {
+            guard let remote = connection?.remoteObjectProxyWithErrorHandler({ _ in reply.finish(nil) }) as? LockgateFilterIPC else {
                 reply.finish(nil)
                 return
             }
@@ -222,7 +222,7 @@ final class NetworkFilterController: NSObject, ObservableObject, OSSystemExtensi
     }
 
     nonisolated func requestNeedsUserApproval(_ request: OSSystemExtensionRequest) {
-        Task { @MainActor in self.status = "等待 macOS 授权：请在系统设置中允许 Account Guardian 系统扩展。" }
+        Task { @MainActor in self.status = "等待 macOS 授权：请在系统设置中允许 Lockgate 系统扩展。" }
     }
 
     nonisolated func request(_ request: OSSystemExtensionRequest, didFinishWithResult result: OSSystemExtensionRequest.Result) {

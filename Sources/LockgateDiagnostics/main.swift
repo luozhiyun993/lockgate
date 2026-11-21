@@ -1,9 +1,9 @@
 import Foundation
-import GuardianCore
+import LockgateCore
 
 let connection = LocalInspector.inspectConnection()
 print("代理与路由：\(connection.health.summary)")
-let settings = (try? StateStore().load().settings) ?? GuardianSettings()
+let settings = (try? StateStore().load().settings) ?? LockgateSettings()
 let inspection = ProcessInspector.inspect(settings: settings)
 print("进程检查：\(inspection.health.summary)")
 if CommandLine.arguments.contains("--list-processes") {

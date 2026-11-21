@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 @MainActor
-final class GuardianAppDelegate: NSObject, NSApplicationDelegate {
+final class LockgateAppDelegate: NSObject, NSApplicationDelegate {
     var openMainWindow: (() -> Void)?
     var stopForTermination: (() async -> Bool)?
     private var terminating = false
@@ -28,7 +28,7 @@ final class GuardianAppDelegate: NSObject, NSApplicationDelegate {
 }
 
 struct MainWindowReopenHandler: ViewModifier {
-    let delegate: GuardianAppDelegate
+    let delegate: LockgateAppDelegate
     @Environment(\.openWindow) private var openWindow
 
     func body(content: Content) -> some View {

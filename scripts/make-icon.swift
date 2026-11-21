@@ -24,7 +24,7 @@ func fill(_ path: NSBezierPath, color: NSColor, outlined: Bool = true) {
     if outlined { stroke(path) }
 }
 
-func drawGuardian(detailed: Bool) {
+func drawLockgate(detailed: Bool) {
     fill(NSBezierPath(roundedRect: NSRect(x: 44, y: 44, width: 936, height: 936),
                       xRadius: 216, yRadius: 216), color: paper, outlined: false)
 
@@ -114,7 +114,7 @@ for size in [16, 32, 128, 256, 512] {
         let transform = NSAffineTransform()
         transform.scale(by: CGFloat(pixels) / 1024)
         transform.concat()
-        drawGuardian(detailed: pixels >= 64)
+        drawLockgate(detailed: pixels >= 64)
         NSGraphicsContext.restoreGraphicsState()
         let suffix = scale == 2 ? "@2x" : ""
         try bitmap.representation(using: .png, properties: [:])!

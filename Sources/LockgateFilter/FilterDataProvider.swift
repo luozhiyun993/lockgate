@@ -1,7 +1,7 @@
 import Foundation
 import NetworkExtension
 import Security
-import GuardianCore
+import LockgateCore
 
 private struct FlowIdentity {
     var uid: UInt32?
@@ -9,7 +9,7 @@ private struct FlowIdentity {
     var entrypoint: String?
 }
 
-final class FilterDataProvider: NEFilterDataProvider, NSXPCListenerDelegate, GuardianFilterIPC {
+final class FilterDataProvider: NEFilterDataProvider, NSXPCListenerDelegate, LockgateFilterIPC {
     private let stateLock = NSRecursiveLock()
     private var lease: FilterLease?
     private var listener: NSXPCListener?
@@ -23,19 +23,19 @@ final class FilterDataProvider: NEFilterDataProvider, NSXPCListenerDelegate, Gua
               let policy = try? JSONDecoder().decode(FilterPolicySnapshot.self, from: data),
               let service = Bundle.main.object(forInfoDictionaryKey: "NetworkExtension") as? [String: Any],
               let name = service["NEMachServiceName"] as? String,
-              let team = Bundle.main.object(forInfoDictionaryKey: "GuardianTeamID") as? String,
+              let team = Bundle.main.object(forInfoDictionaryKey: "LockgateTeamID") as? String,
               team.range(of: "^[A-Z0-9]{10}$", options: .regularExpression) != nil else {
-            completionHandler(NSError(domain: "GuardianFilter", code: 1,
+            completionHandler(NSError(domain: "LockgateFilter", code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "Missing signed extension configuration"]))
             return
         }
         lease = FilterLease(policy: policy)
         let listener = NSXPCListener(machServiceName: name)
-        listener.setConnectionCodeSigningRequirement("anchor apple generic and identifier \"dev.local.agent-account-guardian\" and certificate leaf[subject.OU] = \"\(team)\"")
+        listener.setConnectionCodeSigningRequirement("anchor apple generic and identifier \"dev.local.lockgate\" and certificate leaf[subject.OU] = \"\(team)\"")
         listener.delegate = self
         listener.resume()
         self.listener = listener
-        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "guardian.filter.lease"))
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "lockgate.filter.lease"))
         timer.schedule(deadline: .now(), repeating: 1)
         timer.setEventHandler { [weak self] in self?.blockExistingFlows() }
         timer.resume()
@@ -58,7 +58,7 @@ final class FilterDataProvider: NEFilterDataProvider, NSXPCListenerDelegate, Gua
         stateLock.lock()
         defer { stateLock.unlock() }
         guard connection.effectiveUserIdentifier == lease?.policy.ownerUID else { return false }
-        connection.exportedInterface = NSXPCInterface(with: GuardianFilterIPC.self)
+        connection.exportedInterface = NSXPCInterface(with: LockgateFilterIPC.self)
         connection.exportedObject = self
         connection.invalidationHandler = { [weak self, weak connection] in
             guard let self, let connection else { return }

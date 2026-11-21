@@ -123,7 +123,7 @@ public enum ProcessInspector {
         InstallationDiscovery.desktopApplication(containingExecutable: path) != nil
     }
 
-    static func hasUnresolvedCandidate(_ identity: ProcessIdentity, settings: GuardianSettings,
+    static func hasUnresolvedCandidate(_ identity: ProcessIdentity, settings: LockgateSettings,
                                        uid: UInt32 = getuid(), cliExecutable: String? = nil,
                                        arguments: [String] = [], installations: ClaudeInstallations? = nil,
                                        workingDirectory: String? = nil) -> Bool {
@@ -167,7 +167,7 @@ public enum ProcessInspector {
         return arguments
     }
 
-    public static func claudeCommand(settings: GuardianSettings = GuardianSettings()) -> URL? {
+    public static func claudeCommand(settings: LockgateSettings = LockgateSettings()) -> URL? {
         InstallationDiscovery.discover(settings: settings).cliCommands.first
     }
 
@@ -181,7 +181,7 @@ public enum ProcessInspector {
         return path.hasPrefix("/") ? path : nil
     }
 
-    public static func isProtected(_ identity: ProcessIdentity, settings: GuardianSettings,
+    public static func isProtected(_ identity: ProcessIdentity, settings: LockgateSettings,
                                    uid: UInt32 = getuid(), cliExecutable: String? = nil,
                                    arguments: [String] = [], installations: ClaudeInstallations? = nil,
                                    workingDirectory: String? = nil) -> Bool {
@@ -209,7 +209,7 @@ public enum ProcessInspector {
         return errno == ESRCH ? .gone : .unknown
     }
 
-    static func evaluate(_ processes: [ProcessIdentity], settings: GuardianSettings,
+    static func evaluate(_ processes: [ProcessIdentity], settings: LockgateSettings,
                          uid: UInt32 = getuid(), cliExecutable: String? = nil,
                          installations: ClaudeInstallations? = nil,
                          arguments: (Int32) -> [String], lifecycle: (Int32) -> ProcessLifecycle,
@@ -235,7 +235,7 @@ public enum ProcessInspector {
         return ProcessInspection(targets: targets, failureReason: reason)
     }
 
-    public static func inspect(settings: GuardianSettings) -> ProcessInspection {
+    public static func inspect(settings: LockgateSettings) -> ProcessInspection {
         guard let processes = snapshot() else {
             return ProcessInspection(targets: [], failureReason: "无法读取系统进程列表，启动门禁保持关闭。")
         }
@@ -244,14 +244,14 @@ public enum ProcessInspector {
                         arguments: arguments, lifecycle: lifecycle, workingDirectory: workingDirectory)
     }
 
-    public static func inspectAllClaude(settings: GuardianSettings) -> ProcessInspection {
+    public static func inspectAllClaude(settings: LockgateSettings) -> ProcessInspection {
         var settings = settings
         settings.protectDesktop = true
         settings.protectCLI = true
         return inspect(settings: settings)
     }
 
-    public static func protectedProcesses(settings: GuardianSettings) -> [ProcessIdentity]? {
+    public static func protectedProcesses(settings: LockgateSettings) -> [ProcessIdentity]? {
         let result = inspect(settings: settings)
         return result.failureReason == nil ? result.targets : nil
     }

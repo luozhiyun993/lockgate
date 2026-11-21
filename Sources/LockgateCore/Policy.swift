@@ -1,7 +1,7 @@
 import Foundation
 import Darwin
 
-public struct GuardianSettings: Codable, Equatable {
+public struct LockgateSettings: Codable, Equatable {
     public var country = "JP"
     public var pinnedIP = ""
     public var pinEnabled = false
@@ -184,8 +184,8 @@ public enum Decision: Equatable {
     }
 }
 
-public enum GuardianPolicy {
-    public static func evaluate(settings: GuardianSettings, local: LocalHealth,
+public enum LockgatePolicy {
+    public static func evaluate(settings: LockgateSettings, local: LocalHealth,
                                 exit: ExitHealth, processes: ProcessHealth? = nil, previousIP: String? = nil,
                                 now: Date = Date()) -> Decision {
         if let error = settings.validationError { return .wait(error) }
@@ -217,7 +217,7 @@ public enum GuardianPolicy {
 }
 
 public struct ProtectionState: Codable {
-    public var settings = GuardianSettings()
+    public var settings = LockgateSettings()
     public var enabled = false
     public var lockedReason: String?
     public var heartbeat = Date.distantPast
@@ -248,9 +248,25 @@ public struct StateStore {
     public let directory: URL
     public var url: URL { directory.appendingPathComponent("state.json") }
 
-    public init(directory: URL = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Application Support/AgentAccountGuardian")) {
+    /// 默认状态目录。首次使用时，如果只存在改名前的 `AgentAccountGuardian` 目录，
+    /// 会把它复制过来，保证已有设置和锁定不会因为改名而丢失。
+    public static let defaultDirectory: URL = {
+        let support = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support")
+        let directory = support.appendingPathComponent("Lockgate")
+        migrateLegacyDirectory(from: support.appendingPathComponent("AgentAccountGuardian"), to: directory)
+        return directory
+    }()
+
+    public init(directory: URL = StateStore.defaultDirectory) {
         self.directory = directory
+    }
+
+    /// 仅在新目录不存在时复制；保留旧目录，仍在运行的旧版本不受影响。
+    public static func migrateLegacyDirectory(from legacy: URL, to directory: URL) {
+        let files = FileManager.default
+        guard !files.fileExists(atPath: directory.path), files.fileExists(atPath: legacy.path) else { return }
+        try? files.copyItem(at: legacy, to: directory)
     }
 
     public func load() throws -> ProtectionState {

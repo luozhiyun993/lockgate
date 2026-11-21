@@ -1,6 +1,6 @@
 import SwiftUI
 import AppKit
-import GuardianCore
+import LockgateCore
 
 private enum Page: String, CaseIterable {
     case overview = "保护概览"
@@ -18,10 +18,10 @@ private enum Page: String, CaseIterable {
     }
 }
 
-struct GuardianView: View {
-    @ObservedObject var model: GuardianModel
+struct LockgateView: View {
+    @ObservedObject var model: LockgateModel
     @State private var page: Page = .overview
-    @State private var draft: GuardianSettings
+    @State private var draft: LockgateSettings
     @State private var confirmEnable = false
     @State private var confirmPause = false
     @State private var confirmRealTest = false
@@ -29,12 +29,12 @@ struct GuardianView: View {
     private let accent = Color(red: 0.13, green: 0.37, blue: 0.78)
 
     private var mascot: NSImage {
-        if let url = Bundle.main.url(forResource: "GuardianMascot", withExtension: "png"),
+        if let url = Bundle.main.url(forResource: "LockgateMascot", withExtension: "png"),
            let image = NSImage(contentsOf: url) { return image }
         return NSApplication.shared.applicationIconImage
     }
 
-    init(model: GuardianModel) {
+    init(model: LockgateModel) {
         self.model = model
         _draft = State(initialValue: model.state.settings)
     }
@@ -111,7 +111,7 @@ struct GuardianView: View {
         } message: {
             Text("会终止当前用户所有已核实的 Claude Desktop / Code 进程，不受保护对象勾选限制。未保存的工作可能丢失；无法核实身份的进程不会仅凭名称终止。")
         }
-        .alert("Account Guardian", isPresented: Binding(get: { !model.notice.isEmpty }, set: { if !$0 { model.notice = "" } })) {
+        .alert("Lockgate", isPresented: Binding(get: { !model.notice.isEmpty }, set: { if !$0 { model.notice = "" } })) {
             Button("知道了") { model.notice = "" }
         } message: { Text(model.notice) }
     }
@@ -131,8 +131,8 @@ struct GuardianView: View {
                 Image(nsImage: mascot).resizable().interpolation(.high)
                     .frame(width: 44, height: 44)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("ACCOUNT").font(.system(size: 10, weight: .bold)).tracking(2)
-                    Text("Guardian").font(.system(size: 21, weight: .semibold))
+                    Text("AGENT").font(.system(size: 10, weight: .bold)).tracking(2)
+                    Text("Lockgate").font(.system(size: 21, weight: .semibold))
                 }
             }.padding(.top, 12)
             VStack(spacing: 7) {

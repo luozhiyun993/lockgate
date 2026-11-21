@@ -1,5 +1,7 @@
 # 验证记录
 
+> 项目已由 Account Guardian 改名为 Lockgate。以下为历史记录，其中的 `Guardian*` 标识符和 `guardian-diagnostics` 命令保留当时的名称，现分别对应 `Lockgate*` 和 `lockgate-diagnostics`。
+
 ## 0.3.0 实验性网络过滤（2026-11-08）
 
 - 新增默认关闭的设置开关、地址编辑、其他应用范围选项、系统扩展控制器、内容过滤 provider 和签名打包流程。

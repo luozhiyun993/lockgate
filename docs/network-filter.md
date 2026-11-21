@@ -26,22 +26,22 @@ Claude process protection covers all outbound socket flows the provider identifi
 
 ## Signing build / 签名构建
 
-Requires a Developer ID Application signing identity, two matching Developer ID provisioning profiles and the relevant Apple capabilities. The host bundle ID is `dev.local.agent-account-guardian`; the extension is `dev.local.agent-account-guardian.filter`.
+Requires a Developer ID Application signing identity, two matching Developer ID provisioning profiles and the relevant Apple capabilities. The host bundle ID is `dev.local.lockgate`; the extension is `dev.local.lockgate.filter`.
 
-Both profiles must authorize `content-filter-provider-systemextension` and the shared application group `<TEAM_ID>.dev.local.agent-account-guardian`. The host also needs `com.apple.developer.system-extension.install`. The packager validates these values before embedding profiles or signing. Keep identities, profiles and credentials out of Git.
+Both profiles must authorize `content-filter-provider-systemextension` and the shared application group `<TEAM_ID>.dev.local.lockgate`. The host also needs `com.apple.developer.system-extension.install`. The packager validates these values before embedding profiles or signing. Keep identities, profiles and credentials out of Git.
 
 ```sh
-export GUARDIAN_WITH_FILTER=1
-export GUARDIAN_TEAM_ID='YOURTEAMID'
-export GUARDIAN_SIGN_IDENTITY='Developer ID Application: Your Name (YOURTEAMID)'
-export GUARDIAN_APP_PROFILE='/absolute/path/host.provisionprofile'
-export GUARDIAN_FILTER_PROFILE='/absolute/path/filter.provisionprofile'
+export LOCKGATE_WITH_FILTER=1
+export LOCKGATE_TEAM_ID='YOURTEAMID'
+export LOCKGATE_SIGN_IDENTITY='Developer ID Application: Your Name (YOURTEAMID)'
+export LOCKGATE_APP_PROFILE='/absolute/path/host.provisionprofile'
+export LOCKGATE_FILTER_PROFILE='/absolute/path/filter.provisionprofile'
 bash scripts/build-app.sh
 ```
 
 The script signs the extension first and the host second, with hardened runtime and timestamps. It does not notarize automatically. Complete notarization and staple the ticket before distributing; validate on a separate Mac. Install under `/Applications`, close existing Claude sessions, save the switch, approve macOS prompts, and require a live provider acknowledgement in the UI. If macOS reports a reboot is needed, restart before retrying.
 
-普通版本无法激活扩展，不应关闭 SIP 或绕过系统签名校验。安装失败时仍保留用户的偏好，但显示未就绪并关闭受管启动门禁。若旧签名版已经安装扩展，新版本无法确认停用时会阻止正常退出；可在 macOS 的网络过滤设置中先停用 Account Guardian，再重试退出。
+普通版本无法激活扩展，不应关闭 SIP 或绕过系统签名校验。安装失败时仍保留用户的偏好，但显示未就绪并关闭受管启动门禁。若旧签名版已经安装扩展，新版本无法确认停用时会阻止正常退出；可在 macOS 的网络过滤设置中先停用 Lockgate，再重试退出。
 
 ## Acceptance tests / 实机验收（待签名环境执行）
 

@@ -1,8 +1,8 @@
 import XCTest
-@testable import GuardianCore
+@testable import LockgateCore
 import Darwin
 
-final class GuardianPolicyTests: XCTestCase {
+final class LockgatePolicyTests: XCTestCase {
     private let healthy = LocalHealth.healthy(interface: "utun1500")
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
 
@@ -11,39 +11,39 @@ final class GuardianPolicyTests: XCTestCase {
     }
 
     func testMatchingCountryAllowsLaunchAndIPChangeOnlyWarns() {
-        let settings = GuardianSettings()
-        XCTAssertEqual(GuardianPolicy.evaluate(settings: settings, local: healthy, exit: exit(), now: now), .allow)
-        let changed = GuardianPolicy.evaluate(settings: settings, local: healthy, exit: exit(), previousIP: "1.1.1.1", now: now)
+        let settings = LockgateSettings()
+        XCTAssertEqual(LockgatePolicy.evaluate(settings: settings, local: healthy, exit: exit(), now: now), .allow)
+        let changed = LockgatePolicy.evaluate(settings: settings, local: healthy, exit: exit(), previousIP: "1.1.1.1", now: now)
         guard case .warn = changed else { return XCTFail("Same-country changes must only warn") }
         XCTAssertTrue(changed.mayLaunch)
     }
 
     func testWrongCountryTrips() {
-        let result = GuardianPolicy.evaluate(settings: GuardianSettings(), local: healthy, exit: exit("8.8.8.8", "US"), now: now)
+        let result = LockgatePolicy.evaluate(settings: LockgateSettings(), local: healthy, exit: exit("8.8.8.8", "US"), now: now)
         guard case .trip = result else { return XCTFail("Country mismatch must trip") }
         XCTAssertFalse(result.mayLaunch)
     }
 
     func testPinnedMismatchTripsWithinSameCountry() {
-        var settings = GuardianSettings()
+        var settings = LockgateSettings()
         settings.pinEnabled = true
         settings.pinnedIP = "1.1.1.1"
-        guard case .trip = GuardianPolicy.evaluate(settings: settings, local: healthy, exit: exit(), now: now) else {
+        guard case .trip = LockgatePolicy.evaluate(settings: settings, local: healthy, exit: exit(), now: now) else {
             return XCTFail("Pinned IP must match even within target country")
         }
     }
 
     func testPinnedMatchDoesNotOverrideWrongCountry() {
-        var settings = GuardianSettings()
+        var settings = LockgateSettings()
         settings.pinEnabled = true
         settings.pinnedIP = "8.8.8.8"
-        guard case .trip = GuardianPolicy.evaluate(settings: settings, local: healthy, exit: exit("8.8.8.8", "US"), now: now) else {
+        guard case .trip = LockgatePolicy.evaluate(settings: settings, local: healthy, exit: exit("8.8.8.8", "US"), now: now) else {
             return XCTFail("Pinning adds a constraint; it does not bypass country checks")
         }
     }
 
     func testTimeoutDoesNotTripButBlocksLaunch() {
-        let result = GuardianPolicy.evaluate(settings: GuardianSettings(), local: healthy, exit: .unknown("timeout"), now: now)
+        let result = LockgatePolicy.evaluate(settings: LockgateSettings(), local: healthy, exit: .unknown("timeout"), now: now)
         XCTAssertEqual(result, .wait("timeout"))
         var state = ProtectionState()
         state.enabled = true
@@ -53,23 +53,23 @@ final class GuardianPolicyTests: XCTestCase {
     }
 
     func testConfirmedKernelFailureTripsEvenWhenNetworkIsUnknown() {
-        let result = GuardianPolicy.evaluate(settings: GuardianSettings(), local: .unsafe("kernel stopped"), exit: .unknown("timeout"), now: now)
+        let result = LockgatePolicy.evaluate(settings: LockgateSettings(), local: .unsafe("kernel stopped"), exit: .unknown("timeout"), now: now)
         XCTAssertEqual(result, .trip("kernel stopped"))
     }
 
     func testUnknownLocalDoesNotHideConfirmedExitMismatch() {
-        let result = GuardianPolicy.evaluate(settings: GuardianSettings(), local: .unknown("route unavailable"), exit: exit("8.8.8.8", "US"), now: now)
+        let result = LockgatePolicy.evaluate(settings: LockgateSettings(), local: .unknown("route unavailable"), exit: exit("8.8.8.8", "US"), now: now)
         guard case .trip = result else { return XCTFail("Confirmed exit violation must trip") }
     }
 
     func testUnknownProcessesBlockLaunchWithoutChangingHealthyNetwork() {
         let processes = ProcessHealth(targets: nil)
         XCTAssertNil(processes.count)
-        let result = GuardianPolicy.evaluate(settings: GuardianSettings(), local: healthy,
+        let result = LockgatePolicy.evaluate(settings: LockgateSettings(), local: healthy,
             exit: exit(), processes: processes, now: now)
         XCTAssertEqual(result, .wait(processes.summary))
         XCTAssertEqual(healthy.summary, "网络路径已确认 · utun1500")
-        XCTAssertEqual(GuardianPolicy.evaluate(settings: GuardianSettings(), local: healthy,
+        XCTAssertEqual(LockgatePolicy.evaluate(settings: LockgateSettings(), local: healthy,
             exit: exit(), now: now), .allow)
         var state = ProtectionState()
         state.enabled = true
@@ -87,7 +87,7 @@ final class GuardianPolicyTests: XCTestCase {
         XCTAssertEqual(processes, .healthy(count: 0))
         XCTAssertEqual(processes.count, 0)
         XCTAssertEqual(processes.summary, "进程检查已完成 · 已识别 0 个受保护进程")
-        XCTAssertEqual(GuardianPolicy.evaluate(settings: GuardianSettings(), local: healthy,
+        XCTAssertEqual(LockgatePolicy.evaluate(settings: LockgateSettings(), local: healthy,
             exit: exit(), processes: processes, now: now), .allow)
         let target = ProcessIdentity(pid: 100, uid: 501, started: "today", executable: "/bin/sleep")
         XCTAssertEqual(ProcessHealth(targets: [target]), .healthy(count: 1))
@@ -95,28 +95,28 @@ final class GuardianPolicyTests: XCTestCase {
 
     func testUnknownProcessesDoNotHideConfirmedNetworkOrExitFaults() {
         let processes = ProcessHealth(targets: nil)
-        XCTAssertEqual(GuardianPolicy.evaluate(settings: GuardianSettings(), local: .unsafe("proxy refused"),
+        XCTAssertEqual(LockgatePolicy.evaluate(settings: LockgateSettings(), local: .unsafe("proxy refused"),
             exit: .unknown("timeout"), processes: processes, now: now), .trip("proxy refused"))
-        guard case .trip = GuardianPolicy.evaluate(settings: GuardianSettings(), local: healthy,
+        guard case .trip = LockgatePolicy.evaluate(settings: LockgateSettings(), local: healthy,
             exit: exit("8.8.8.8", "US"), processes: processes, now: now) else {
             return XCTFail("Unknown processes must not hide a confirmed country mismatch")
         }
-        var settings = GuardianSettings()
+        var settings = LockgateSettings()
         settings.pinEnabled = true
         settings.pinnedIP = "1.1.1.1"
-        guard case .trip = GuardianPolicy.evaluate(settings: settings, local: healthy,
+        guard case .trip = LockgatePolicy.evaluate(settings: settings, local: healthy,
             exit: exit(), processes: processes, now: now) else {
             return XCTFail("Unknown processes must not hide a confirmed IP mismatch")
         }
     }
 
     func testSeparateProcessStatusPreservesLegacyGateDecisions() {
-        var pinned = GuardianSettings()
+        var pinned = LockgateSettings()
         pinned.pinEnabled = true
         pinned.pinnedIP = "1.1.1.1"
         let staleExit = ExitHealth.known(ExitObservation(ip: "8.8.8.8", country: "JP",
             timestamp: now.addingTimeInterval(-26)))
-        for settings in [GuardianSettings(), pinned] {
+        for settings in [LockgateSettings(), pinned] {
             for local in [healthy, .unknown("route unavailable"), .unsafe("proxy refused")] {
                 for observation in [exit(), exit("8.8.8.8", "US"), .unknown("timeout"), staleExit] {
                     for processes in [ProcessHealth.healthy(count: 0), ProcessHealth(targets: nil)] {
@@ -124,9 +124,9 @@ final class GuardianPolicyTests: XCTestCase {
                         if case .healthy = local, case .unknown(let reason) = processes {
                             legacyLocal = .unknown(reason)
                         }
-                        let legacy = GuardianPolicy.evaluate(settings: settings, local: legacyLocal,
+                        let legacy = LockgatePolicy.evaluate(settings: settings, local: legacyLocal,
                             exit: observation, previousIP: "1.1.1.1", now: now)
-                        let separated = GuardianPolicy.evaluate(settings: settings, local: local,
+                        let separated = LockgatePolicy.evaluate(settings: settings, local: local,
                             exit: observation, processes: processes, previousIP: "1.1.1.1", now: now)
                         XCTAssertEqual(separated, legacy)
                     }
@@ -138,16 +138,16 @@ final class GuardianPolicyTests: XCTestCase {
     func testPartialProcessesBlockLaunchButKeepVerifiedCountAndNetworkFaultPriority() {
         let processes = ProcessHealth.partial(count: 2, reason: "Claude candidate unresolved")
         XCTAssertEqual(processes.count, 2)
-        let result = GuardianPolicy.evaluate(settings: GuardianSettings(), local: healthy,
+        let result = LockgatePolicy.evaluate(settings: LockgateSettings(), local: healthy,
             exit: exit(), processes: processes, now: now)
         XCTAssertEqual(result, .wait("Claude candidate unresolved"))
-        XCTAssertEqual(GuardianPolicy.evaluate(settings: GuardianSettings(), local: .unsafe("proxy refused"),
+        XCTAssertEqual(LockgatePolicy.evaluate(settings: LockgateSettings(), local: .unsafe("proxy refused"),
             exit: exit(), processes: processes, now: now), .trip("proxy refused"))
     }
 
     func testStaleOrFutureObservationCannotLaunch() {
         for timestamp in [now.addingTimeInterval(-26), now.addingTimeInterval(10)] {
-            let result = GuardianPolicy.evaluate(settings: GuardianSettings(), local: healthy,
+            let result = LockgatePolicy.evaluate(settings: LockgateSettings(), local: healthy,
                 exit: .known(ExitObservation(ip: "8.8.8.8", country: "JP", timestamp: timestamp)), now: now)
             guard case .wait = result else { return XCTFail("Unusable observations cannot authorize launch") }
         }
@@ -179,10 +179,10 @@ final class GuardianPolicyTests: XCTestCase {
     }
 
     func testIPv6CanonicalEquality() {
-        var settings = GuardianSettings()
+        var settings = LockgateSettings()
         settings.pinEnabled = true
         settings.pinnedIP = "2606:4700:4700:0000:0000:0000:0000:1111"
-        XCTAssertEqual(GuardianPolicy.evaluate(settings: settings, local: healthy,
+        XCTAssertEqual(LockgatePolicy.evaluate(settings: settings, local: healthy,
             exit: exit("2606:4700:4700::1111"), now: now), .allow)
     }
 
@@ -195,7 +195,7 @@ final class GuardianPolicyTests: XCTestCase {
     }
 
     func testInvalidSettingsBlock() {
-        var settings = GuardianSettings()
+        var settings = LockgateSettings()
         settings.country = "Japan"
         XCTAssertNotNil(settings.validationError)
         settings.country = "JP"
@@ -248,8 +248,8 @@ final class InspectionTests: XCTestCase {
         let resolved = raw.resolvingExecutable(installed)
         XCTAssertEqual(resolved.pid, raw.pid)
         XCTAssertEqual(resolved.started, raw.started)
-        XCTAssertTrue(ProcessInspector.isProtected(resolved, settings: GuardianSettings(), uid: 501, cliExecutable: installed))
-        var settings = GuardianSettings()
+        XCTAssertTrue(ProcessInspector.isProtected(resolved, settings: LockgateSettings(), uid: 501, cliExecutable: installed))
+        var settings = LockgateSettings()
         settings.protectCLI = false
         XCTAssertFalse(ProcessInspector.isProtected(resolved, settings: settings, uid: 501, cliExecutable: installed))
     }
@@ -257,30 +257,30 @@ final class InspectionTests: XCTestCase {
     func testMisleadingProcessTitleCannotAuthorizeTermination() throws {
         let installed = "/Users/example/.local/share/claude/versions/2.1.319"
         let raw = try XCTUnwrap(ProcessIdentity.parse("94272 501 Sat Nov 7 23:22:56 2026 \(installed)"))
-        XCTAssertFalse(ProcessInspector.isProtected(raw, settings: GuardianSettings(), uid: 501, cliExecutable: installed))
+        XCTAssertFalse(ProcessInspector.isProtected(raw, settings: LockgateSettings(), uid: 501, cliExecutable: installed))
         let resolved = raw.resolvingExecutable("/bin/sleep")
-        XCTAssertFalse(ProcessInspector.isProtected(resolved, settings: GuardianSettings(), uid: 501, cliExecutable: installed))
+        XCTAssertFalse(ProcessInspector.isProtected(resolved, settings: LockgateSettings(), uid: 501, cliExecutable: installed))
     }
 
     func testUnresolvedCandidateIsUnknownInsteadOfZeroTargets() throws {
         let raw = try XCTUnwrap(ProcessIdentity.parse("94272 501 Sat Nov 7 23:22:56 2026 claude"))
-        XCTAssertTrue(ProcessInspector.hasUnresolvedCandidate(raw.resolvingExecutable(nil), settings: GuardianSettings(), uid: 501))
-        XCTAssertTrue(ProcessInspector.hasUnresolvedCandidate(raw.resolvingExecutable("claude"), settings: GuardianSettings(), uid: 501))
-        XCTAssertFalse(ProcessInspector.hasUnresolvedCandidate(raw, settings: GuardianSettings(), uid: 502))
-        XCTAssertFalse(ProcessInspector.hasUnresolvedCandidate(raw.resolvingExecutable("/bin/sleep"), settings: GuardianSettings(), uid: 501))
+        XCTAssertTrue(ProcessInspector.hasUnresolvedCandidate(raw.resolvingExecutable(nil), settings: LockgateSettings(), uid: 501))
+        XCTAssertTrue(ProcessInspector.hasUnresolvedCandidate(raw.resolvingExecutable("claude"), settings: LockgateSettings(), uid: 501))
+        XCTAssertFalse(ProcessInspector.hasUnresolvedCandidate(raw, settings: LockgateSettings(), uid: 502))
+        XCTAssertFalse(ProcessInspector.hasUnresolvedCandidate(raw.resolvingExecutable("/bin/sleep"), settings: LockgateSettings(), uid: 501))
     }
 
     func testDesktopMainAndHelperPathsRemainRecognized() throws {
         for path in ["/Applications/Claude.app/Contents/MacOS/Claude",
                      "/Applications/Claude.app/Contents/Frameworks/Claude Helper.app/Contents/MacOS/Claude Helper"] {
             let raw = try XCTUnwrap(ProcessIdentity.parse("94272 501 Sat Nov 7 23:22:56 2026 Claude"))
-            XCTAssertTrue(ProcessInspector.isProtected(raw.resolvingExecutable(path), settings: GuardianSettings(), uid: 501,
+            XCTAssertTrue(ProcessInspector.isProtected(raw.resolvingExecutable(path), settings: LockgateSettings(), uid: 501,
                 installations: ClaudeInstallations(desktopApplications: [URL(fileURLWithPath: "/Applications/Claude.app")])) )
         }
     }
 
     func testMatcherDoesNotSelectOtherUsersOrSimilarNames() {
-        let settings = GuardianSettings()
+        let settings = LockgateSettings()
         func process(_ path: String, uid: UInt32 = 501) -> ProcessIdentity {
             ProcessIdentity(pid: 100, uid: uid, started: "today", executable: path)
         }
@@ -295,16 +295,16 @@ final class InspectionTests: XCTestCase {
     func testNodeMatchingRequiresActualEntrypointNotMentionInEval() {
         let path = "/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js"
         let identity = ProcessIdentity(pid: 100, uid: 501, started: "today", executable: "/opt/homebrew/bin/node")
-        XCTAssertTrue(ProcessInspector.isProtected(identity, settings: GuardianSettings(), uid: 501, cliExecutable: path, arguments: ["node", path]))
-        XCTAssertFalse(ProcessInspector.isProtected(identity, settings: GuardianSettings(), uid: 501, cliExecutable: path, arguments: ["node", "-e", path]))
+        XCTAssertTrue(ProcessInspector.isProtected(identity, settings: LockgateSettings(), uid: 501, cliExecutable: path, arguments: ["node", path]))
+        XCTAssertFalse(ProcessInspector.isProtected(identity, settings: LockgateSettings(), uid: 501, cliExecutable: path, arguments: ["node", "-e", path]))
     }
 
     func testRenamedNodeProcessStillRequiresClaudeEntrypoint() throws {
         let path = "/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js"
         let raw = try XCTUnwrap(ProcessIdentity.parse("94272 501 Sat Nov 7 23:22:56 2026 claude"))
         let identity = raw.resolvingExecutable("/opt/homebrew/bin/node")
-        XCTAssertTrue(ProcessInspector.isProtected(identity, settings: GuardianSettings(), uid: 501, cliExecutable: path, arguments: ["node", path]))
-        XCTAssertFalse(ProcessInspector.isProtected(identity, settings: GuardianSettings(), uid: 501, cliExecutable: path, arguments: ["node", "/tmp/other.js"]))
+        XCTAssertTrue(ProcessInspector.isProtected(identity, settings: LockgateSettings(), uid: 501, cliExecutable: path, arguments: ["node", path]))
+        XCTAssertFalse(ProcessInspector.isProtected(identity, settings: LockgateSettings(), uid: 501, cliExecutable: path, arguments: ["node", "/tmp/other.js"]))
     }
 
     func testKernelFallbackUsesExecutablePathNotMutableArgumentZero() {
@@ -322,7 +322,7 @@ final class InspectionTests: XCTestCase {
     }
 
     func testUnrelatedNodeAndSimilarNamesDoNotBlockInspection() {
-        let settings = GuardianSettings()
+        let settings = LockgateSettings()
         let cli = "/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js"
         for name in ["node", "bun", "claude-helper", "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node",
                      "/Applications/Codex.app/Contents/Resources/cua_node/bin/node"] {
@@ -336,7 +336,7 @@ final class InspectionTests: XCTestCase {
     }
 
     func testExitedCandidatesAreIgnoredButRunningUnknownKeepsVerifiedTargets() {
-        let settings = GuardianSettings()
+        let settings = LockgateSettings()
         let target = ProcessIdentity(pid: 100, uid: 501, started: "today", executable: "/Applications/Claude.app/Contents/MacOS/Claude")
         let unknown = ProcessIdentity(pid: 101, uid: 501, started: "today", executable: "claude", executableVerified: false)
         let installations = ClaudeInstallations(desktopApplications: [URL(fileURLWithPath: "/Applications/Claude.app")])
@@ -355,7 +355,7 @@ final class InspectionTests: XCTestCase {
     }
 
     func testOnlyClaudeNodeEntrypointIsTargetOrUnresolvedCandidate() {
-        let settings = GuardianSettings()
+        let settings = LockgateSettings()
         let cli = "/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js"
         let raw = ProcessIdentity(pid: 100, uid: 501, started: "today", executable: "node", executableVerified: false)
         let args = ["node", cli]
@@ -396,5 +396,27 @@ final class InspectionTests: XCTestCase {
         XCTAssertEqual(report.stopped, 1)
         XCTAssertEqual(report.failed, 0)
         XCTAssertFalse(child.isRunning)
+    }
+
+    func testLegacyDirectoryIsCopiedOnceAndNeverOverwritesNewState() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let legacy = root.appendingPathComponent("AgentAccountGuardian")
+        let current = root.appendingPathComponent("Lockgate")
+        var state = ProtectionState()
+        state.enabled = true
+        state.observe(.trip("legacy lock"))
+        try StateStore(directory: legacy).save(state)
+
+        StateStore.migrateLegacyDirectory(from: legacy, to: current)
+        XCTAssertEqual(try StateStore(directory: current).load().lockedReason, "legacy lock")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: legacy.path))
+
+        var newer = ProtectionState()
+        newer.enabled = true
+        newer.observe(.trip("newer lock"))
+        try StateStore(directory: current).save(newer)
+        StateStore.migrateLegacyDirectory(from: legacy, to: current)
+        XCTAssertEqual(try StateStore(directory: current).load().lockedReason, "newer lock")
     }
 }

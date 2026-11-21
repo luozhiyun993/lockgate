@@ -2,17 +2,17 @@
 import PackageDescription
 
 let package = Package(
-    name: "AccountGuardian",
+    name: "Lockgate",
     platforms: [.macOS(.v13)],
     products: [
-        .executable(name: "AccountGuardian", targets: ["GuardianApp"]),
-        .executable(name: "guardian-diagnostics", targets: ["GuardianDiagnostics"])
+        .executable(name: "Lockgate", targets: ["LockgateApp"]),
+        .executable(name: "lockgate-diagnostics", targets: ["LockgateDiagnostics"])
     ],
     targets: [
-        .target(name: "GuardianCore"),
-        .executableTarget(name: "GuardianApp", dependencies: ["GuardianCore"]),
-        .executableTarget(name: "GuardianDiagnostics", dependencies: ["GuardianCore"]),
-        .executableTarget(name: "GuardianFilter", dependencies: ["GuardianCore"]),
-        .testTarget(name: "GuardianCoreTests", dependencies: ["GuardianCore"])
+        .target(name: "LockgateCore"),
+        .executableTarget(name: "LockgateApp", dependencies: ["LockgateCore"]),
+        .executableTarget(name: "LockgateDiagnostics", dependencies: ["LockgateCore"]),
+        .executableTarget(name: "LockgateFilter", dependencies: ["LockgateCore"]),
+        .testTarget(name: "LockgateCoreTests", dependencies: ["LockgateCore"])
     ]
 )

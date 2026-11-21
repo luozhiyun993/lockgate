@@ -1,15 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-    <key>CFBundleName</key><string>Account Guardian Network Filter</string>
-    <key>CFBundleIdentifier</key><string>dev.local.agent-account-guardian.filter</string>
-    <key>CFBundleExecutable</key><string>GuardianFilter</string>
+    <key>CFBundleName</key><string>Lockgate Network Filter</string>
+    <key>CFBundleIdentifier</key><string>dev.local.lockgate.filter</string>
+    <key>CFBundleExecutable</key><string>LockgateFilter</string>
     <key>CFBundlePackageType</key><string>SYSX</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>NSSystemExtensionUsageDescription</key><string>在代理失效或守护失联时阻断选中的 Claude 网络连接。</string>
     <key>NetworkExtension</key><dict>
         <key>NEProviderClasses</key><dict>
-            <key>com.apple.networkextension.filter-data</key><string>GuardianFilter.FilterDataProvider</string>
+            <key>com.apple.networkextension.filter-data</key><string>LockgateFilter.FilterDataProvider</string>
         </dict>
     </dict>
 </dict></plist>

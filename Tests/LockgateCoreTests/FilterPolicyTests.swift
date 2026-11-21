@@ -1,5 +1,5 @@
 import XCTest
-@testable import GuardianCore
+@testable import LockgateCore
 
 final class FilterPolicyTests: XCTestCase {
     private func policy() -> FilterPolicySnapshot {

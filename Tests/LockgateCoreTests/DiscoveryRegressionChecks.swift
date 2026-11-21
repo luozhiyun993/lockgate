@@ -1,6 +1,6 @@
 import Foundation
-#if canImport(GuardianCore)
-@testable import GuardianCore
+#if canImport(LockgateCore)
+@testable import LockgateCore
 #endif
 
 /// Dependency-free regression assertions shared by XCTest and the CLI-tools-only runner.
@@ -11,7 +11,7 @@ func discoveryRegressionChecks() throws -> Int {
         if !condition() { throw NSError(domain: "DiscoveryRegression", code: checks,
             userInfo: [NSLocalizedDescriptionKey: message]) }
     }
-    var root = FileManager.default.temporaryDirectory.appendingPathComponent("guardian-discovery-\(UUID().uuidString)")
+    var root = FileManager.default.temporaryDirectory.appendingPathComponent("lockgate-discovery-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     root = URL(fileURLWithPath: InstallationDiscovery.canonical(root.path), isDirectory: true)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -23,12 +23,12 @@ func discoveryRegressionChecks() throws -> Int {
         return url
     }
     let old = Data("{\"country\":\"US\",\"pinnedIP\":\"\",\"pinEnabled\":false,\"protectDesktop\":true,\"protectCLI\":true}".utf8)
-    let migrated = try JSONDecoder().decode(GuardianSettings.self, from: old)
+    let migrated = try JSONDecoder().decode(LockgateSettings.self, from: old)
     try require(migrated.country == "US" && migrated.desktopApplicationPath.isEmpty && migrated.cliExecutablePath.isEmpty, "Old settings must migrate without losing rules")
     var custom = migrated
     custom.desktopApplicationPath = root.appendingPathComponent("Renamed Desktop.app").path
     custom.cliExecutablePath = root.appendingPathComponent("tools/bin/claude").path
-    let restored = try JSONDecoder().decode(GuardianSettings.self, from: JSONEncoder().encode(custom))
+    let restored = try JSONDecoder().decode(LockgateSettings.self, from: JSONEncoder().encode(custom))
     try require(restored == custom, "Custom paths must round-trip")
     custom.cliExecutablePath = "relative/path"
     try require(custom.validationError != nil, "Relative custom path must be rejected")
@@ -84,12 +84,12 @@ func discoveryRegressionChecks() throws -> Int {
     try require(discovered.nativeExecutables.contains(native.path) && discovered.nativeExecutables.contains(oldNative.path), "Multiple native versions must remain observable")
     try require(!discovered.nativeExecutables.contains(nvm.path), "Shell shim must not itself become a kill target")
     let identity = ProcessIdentity(pid: 100, uid: 501, started: "now", executable: oldNative.path)
-    try require(ProcessInspector.isProtected(identity, settings: GuardianSettings(), uid: 501, installations: discovered), "Older discovered version must match alongside current version")
+    try require(ProcessInspector.isProtected(identity, settings: LockgateSettings(), uid: 501, installations: discovered), "Older discovered version must match alongside current version")
     let node = ProcessIdentity(pid: 101, uid: 501, started: "now", executable: "/opt/node/bin/node")
-    try require(ProcessInspector.isProtected(node, settings: GuardianSettings(), uid: 501, arguments: ["node", "--no-warnings", script.path], installations: discovered), "Installed package metadata must recognize Node CLI independent of PATH")
+    try require(ProcessInspector.isProtected(node, settings: LockgateSettings(), uid: 501, arguments: ["node", "--no-warnings", script.path], installations: discovered), "Installed package metadata must recognize Node CLI independent of PATH")
     let child = ProcessIdentity(pid: 102, uid: 501, started: "now", executable: helper.path)
-    try require(ProcessInspector.isProtected(child, settings: GuardianSettings(), uid: 501, installations: discovered), "Custom Desktop helper must match")
+    try require(ProcessInspector.isProtected(child, settings: LockgateSettings(), uid: 501, installations: discovered), "Custom Desktop helper must match")
     let other = ProcessIdentity(pid: 103, uid: 502, started: "now", executable: native.path)
-    try require(!ProcessInspector.isProtected(other, settings: GuardianSettings(), uid: 501, installations: discovered), "Other user remains excluded")
+    try require(!ProcessInspector.isProtected(other, settings: LockgateSettings(), uid: 501, installations: discovered), "Other user remains excluded")
     return checks
 }

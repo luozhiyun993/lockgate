@@ -1,8 +1,8 @@
-# Account Guardian
+# Lockgate
 
 [简体中文](README.md) · [English](README.en.md)
 
-<img src="assets/icon.png" width="128" alt="Account Guardian 小锁卫士图标">
+<img src="assets/icon.png" width="128" alt="Lockgate 小锁图标">
 
 一个面向 macOS、不绑定代理客户端的 Claude 代理守护桌面应用。包含启动前门禁、持续检测、进程急停、异常锁定和手动恢复。
 
@@ -33,10 +33,10 @@
 
 ```sh
 bash scripts/build-app.sh
-open "dist/Account Guardian.app"
+open "dist/Lockgate.app"
 ```
 
-也可以运行 `swift run AccountGuardian` 开发调试。发布包使用本机 ad-hoc 签名，未公证；打包脚本同时构建 arm64 和 x86_64，生成 Apple Silicon / Intel 双架构应用。
+也可以运行 `swift run Lockgate` 开发调试。发布包使用本机 ad-hoc 签名，未公证；打包脚本同时构建 arm64 和 x86_64，生成 Apple Silicon / Intel 双架构应用。
 
 首次打开处于**观察模式**：会检查环境，但不会终止任何 Claude 进程。先进入「出口与规则」，确认目标国家代码及可选的固定 IP，再在「保护概览」启用保护。
 
@@ -82,25 +82,25 @@ open "dist/Account Guardian.app"
 
 可分别选择 Claude Desktop 与 Claude Code。Desktop 通过产品 Bundle ID、系统应用注册和运行进程的外层应用元数据发现，不要求固定目录或文件名；监测与启动复用发现结果。CLI 搜索当前 PATH、常见原生/Homebrew/npm 安装、nvm/asdf/mise/fnm/Volta 入口，并保留原生版本目录中的多个版本。npm 模式根据 `package.json` 的产品名称和 `bin.claude` 声明定位脚本，不依赖 `cli.js` 文件名；支持常见 Node 前置参数及进程工作目录下的相对脚本路径。
 
-特殊 shell 别名、无法解析的 shim 或未覆盖的安装器，可以在「出口与规则 → 安装位置」填写可信的 `.app` / CLI 命令绝对路径（或 `~/`），留空使用自动发现。产品 Bundle ID、npm 包名称和有限的安装器布局仍是匹配约定，不是任意进程的签名认证；纯 shell shim 不作为终止目标。macOS 权限限制、未知 Node 参数等仍可能造成漏检，不能保证所有自定义运行方式；可运行 `guardian-diagnostics --list-installations --list-processes` 核对。
+特殊 shell 别名、无法解析的 shim 或未覆盖的安装器，可以在「出口与规则 → 安装位置」填写可信的 `.app` / CLI 命令绝对路径（或 `~/`），留空使用自动发现。产品 Bundle ID、npm 包名称和有限的安装器布局仍是匹配约定，不是任意进程的签名认证；纯 shell shim 不作为终止目标。macOS 权限限制、未知 Node 参数等仍可能造成漏检，不能保证所有自定义运行方式；可运行 `lockgate-diagnostics --list-installations --list-processes` 核对。
 
 Claude Desktop 通过系统应用启动接口打开。Claude Code 在 Terminal 中启动，执行前会再次检查保护应用心跳、锁定状态、设置、代理和出口。CLI 初始工作目录由 Terminal 决定，需要项目上下文时可在终端中切换目录后使用应用生成的受管命令：
 
 ```sh
-"/你的路径/Account Guardian.app/Contents/MacOS/AccountGuardian" --guarded-cli
+"/你的路径/Lockgate.app/Contents/MacOS/Lockgate" --guarded-cli
 ```
 
 锁定且保护开启期间，从其他入口启动的匹配进程也会在巡检后终止。直接启动 Claude 无法享受启动前门禁；原始 CLI 命令依然存在。急停先发送 TERM，等待后对仍匹配原身份的进程发送 KILL，可能中断未完成的工作。
 
 ## 测试
 
-需要核对已识别的 PID 和本机可执行路径时，可运行 `swift run guardian-diagnostics --list-processes`。它不会终止进程，也不会输出会话参数。
+需要核对已识别的 PID 和本机可执行路径时，可运行 `swift run lockgate-diagnostics --list-processes`。它不会终止进程，也不会输出会话参数。
 
 ```sh
 swift test --disable-sandbox
 bash scripts/verify-discovery.sh
-swift run guardian-diagnostics --list-installations
-swift run guardian-diagnostics --network
+swift run lockgate-diagnostics --list-installations
+swift run lockgate-diagnostics --network
 ```
 
 自动测试覆盖地区/IP 规则、网络未知策略、持久锁定、手动恢复、过期观测、进程匹配与身份复核。真实终止的自动测试只针对测试创建的 `/bin/sleep` 子进程。
@@ -117,10 +117,10 @@ swift run guardian-diagnostics --network
 ## 项目结构
 
 ```text
-Sources/GuardianCore/          检测、进程识别、规则与状态持久化
-Sources/GuardianApp/           SwiftUI 界面、监控与受管启动
-Sources/GuardianDiagnostics/   只读诊断命令
-Tests/GuardianCoreTests/       规则和进程终止测试
+Sources/LockgateCore/          检测、进程识别、规则与状态持久化
+Sources/LockgateApp/           SwiftUI 界面、监控与受管启动
+Sources/LockgateDiagnostics/   只读诊断命令
+Tests/LockgateCoreTests/       规则和进程终止测试
 scripts/                      应用打包与各尺寸图标绘制
 packaging/                    macOS 应用元数据
 assets/                       README 图标
@@ -131,7 +131,7 @@ docs/                         需求、测试步骤与验证记录
 
 ## 数据与边界
 
-设置和锁定存于 `~/Library/Application Support/AgentAccountGuardian/state.json`，事件存于同目录的 `events.json`，最多保留 200 条。目录权限 0700，文件 0600。设置包含预期 IP 和上次检测 IP；事件不记录账号凭据、订阅 URL 或完整进程参数。当前应用不读取 Claude 密码、Cookie 或 Keychain。
+设置和锁定存于 `~/Library/Application Support/Lockgate/state.json`（首次运行会从旧版 `AgentAccountGuardian` 目录复制已有设置和锁定），事件存于同目录的 `events.json`，最多保留 200 条。目录权限 0700，文件 0600。设置包含预期 IP 和上次检测 IP；事件不记录账号凭据、订阅 URL 或完整进程参数。当前应用不读取 Claude 密码、Cookie 或 Keychain。
 
 普通构建仍是进程级急停。检测到终止之间存在时间窗口；未启用可用的签名过滤扩展时，应用未运行、被强制退出或系统睡眠时无法保护。可选网络过滤的覆盖范围和未完成验收事项见上文。允许网络未知时继续运行是明确的可用性取舍，不能据此宣称故障时绝不直连。
 

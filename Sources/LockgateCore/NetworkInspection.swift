@@ -223,7 +223,7 @@ public enum LocalInspector {
             default: break
             }
         }
-        connection.start(queue: DispatchQueue(label: "guardian.proxy-probe"))
+        connection.start(queue: DispatchQueue(label: "lockgate.proxy-probe"))
         let status = semaphore.wait(timeout: .now() + 2)
         connection.cancel()
         return status == .success ? outcome.get() : .unavailable

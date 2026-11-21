@@ -108,7 +108,7 @@ public struct FilterLease {
     }
 }
 
-@objc public protocol GuardianFilterIPC {
+@objc public protocol LockgateFilterIPC {
     func updatePolicy(_ data: Data, reply: @escaping (Data?) -> Void)
 }
 

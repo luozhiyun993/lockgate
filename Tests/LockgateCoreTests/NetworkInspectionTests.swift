@@ -1,6 +1,6 @@
 import XCTest
 import Network
-@testable import GuardianCore
+@testable import LockgateCore
 
 final class NetworkInspectionTests: XCTestCase {
     private let endpoint = ProxyEndpoint(host: "127.0.0.1", port: 7890)!

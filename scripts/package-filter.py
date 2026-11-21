@@ -8,18 +8,18 @@ import sys
 
 app = pathlib.Path(sys.argv[1]).resolve()
 project = pathlib.Path(__file__).resolve().parent.parent
-team = os.environ.get("GUARDIAN_TEAM_ID", "")
-identity = os.environ.get("GUARDIAN_SIGN_IDENTITY", "")
+team = os.environ.get("LOCKGATE_TEAM_ID", "")
+identity = os.environ.get("LOCKGATE_SIGN_IDENTITY", "")
 if not re.fullmatch(r"[A-Z0-9]{10}", team) or not identity.startswith("Developer ID Application:"):
-    raise SystemExit("Set GUARDIAN_TEAM_ID and GUARDIAN_SIGN_IDENTITY (Developer ID Application).")
-group = team + ".dev.local.agent-account-guardian"
+    raise SystemExit("Set LOCKGATE_TEAM_ID and LOCKGATE_SIGN_IDENTITY (Developer ID Application).")
+group = team + ".dev.local.lockgate"
 service = group + ".filter"
 capability = "content-filter-provider-systemextension"
 profiles = {}
-for kind, identifier in [("APP", "dev.local.agent-account-guardian"), ("FILTER", "dev.local.agent-account-guardian.filter")]:
-    path = pathlib.Path(os.environ.get("GUARDIAN_" + kind + "_PROFILE", ""))
+for kind, identifier in [("APP", "dev.local.lockgate"), ("FILTER", "dev.local.lockgate.filter")]:
+    path = pathlib.Path(os.environ.get("LOCKGATE_" + kind + "_PROFILE", ""))
     if not path.is_file():
-        raise SystemExit("Set GUARDIAN_" + kind + "_PROFILE to its Developer ID provisioning profile.")
+        raise SystemExit("Set LOCKGATE_" + kind + "_PROFILE to its Developer ID provisioning profile.")
     decoded = subprocess.run(["security", "cms", "-D", "-i", str(path)], capture_output=True, check=True).stdout
     profile = plistlib.loads(decoded)
     entitlements = profile["Entitlements"]
@@ -33,18 +33,18 @@ for kind, identifier in [("APP", "dev.local.agent-account-guardian"), ("FILTER",
         raise SystemExit("App profile does not authorize system extension installation.")
     profiles[kind] = path
 
-extension = app / "Contents/Library/SystemExtensions/dev.local.agent-account-guardian.filter.systemextension"
+extension = app / "Contents/Library/SystemExtensions/dev.local.lockgate.filter.systemextension"
 (extension / "Contents/MacOS").mkdir(parents=True)
-shutil.copy2(project / ".build/release/GuardianFilter", extension / "Contents/MacOS/GuardianFilter")
+shutil.copy2(project / ".build/release/LockgateFilter", extension / "Contents/MacOS/LockgateFilter")
 app_info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
 info = plistlib.loads((project / "packaging/Filter-Info.plist").read_bytes())
 for key in ["CFBundleShortVersionString", "CFBundleVersion"]:
     info[key] = app_info[key]
-info["GuardianTeamID"] = team
+info["LockgateTeamID"] = team
 info["NetworkExtension"]["NEMachServiceName"] = service
 (extension / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
-app_info["GuardianTeamID"] = team
-app_info["GuardianFilterService"] = service
+app_info["LockgateTeamID"] = team
+app_info["LockgateFilterService"] = service
 (app / "Contents/Info.plist").write_bytes(plistlib.dumps(app_info))
 
 for kind, bundle in [("FILTER", extension), ("APP", app)]:

@@ -1,33 +1,33 @@
 import AppKit
 import SwiftUI
-import GuardianCore
+import LockgateCore
 import Darwin
 
 @main
-enum GuardianEntry {
+enum LockgateEntry {
     @MainActor
     static func main() {
         if CommandLine.arguments.contains("--guarded-cli") {
             CLIEntry.run()
         } else {
-            let others = NSRunningApplication.runningApplications(withBundleIdentifier: "dev.local.agent-account-guardian")
+            let others = NSRunningApplication.runningApplications(withBundleIdentifier: "dev.local.lockgate")
                 .filter { $0.processIdentifier != getpid() }
             if let existing = others.first {
                 existing.activate(options: [.activateIgnoringOtherApps])
                 return
             }
-            GuardianApp.main()
+            LockgateApp.main()
         }
     }
 }
 
-struct GuardianApp: App {
-    @NSApplicationDelegateAdaptor(GuardianAppDelegate.self) private var appDelegate
-    @StateObject private var model = GuardianModel()
+struct LockgateApp: App {
+    @NSApplicationDelegateAdaptor(LockgateAppDelegate.self) private var appDelegate
+    @StateObject private var model = LockgateModel()
 
     var body: some Scene {
-        Window("Account Guardian", id: "main") {
-            GuardianView(model: model)
+        Window("Lockgate", id: "main") {
+            LockgateView(model: model)
                 .frame(minWidth: 980, minHeight: 720)
                 .modifier(MainWindowReopenHandler(delegate: appDelegate))
                 .onAppear { appDelegate.stopForTermination = { await model.stopProtection() } }
@@ -35,7 +35,7 @@ struct GuardianApp: App {
         .defaultSize(width: 1080, height: 800)
         .commands {
             CommandGroup(replacing: .appTermination) {
-                Button("退出 Account Guardian") { confirmQuit() }.keyboardShortcut("q")
+                Button("退出 Lockgate") { confirmQuit() }.keyboardShortcut("q")
             }
         }
         MenuBarExtra(model.statusTitle, systemImage: model.state.lockedReason != nil ? "exclamationmark.triangle.fill" : "lock.fill") {
@@ -59,7 +59,7 @@ struct GuardianApp: App {
 }
 
 struct MenuContents: View {
-    @ObservedObject var model: GuardianModel
+    @ObservedObject var model: LockgateModel
     @Environment(\.openWindow) private var openWindow
     var body: some View {
         Text(model.statusTitle)
@@ -97,7 +97,7 @@ enum CLIEntry {
                 }
                 let exit = await ExitInspector.inspect(transport: transport)
                 let confirmed = LocalInspector.inspectConnection()
-                let decision = GuardianPolicy.evaluate(settings: original.settings, local: confirmed.health, exit: exit)
+                let decision = LockgatePolicy.evaluate(settings: original.settings, local: confirmed.health, exit: exit)
                 let current = try store.load()
                 guard confirmed.transport == transport, current.settings == original.settings, current.permitsLaunch(decision),
                       let command = ProcessInspector.claudeCommand(settings: current.settings) else {

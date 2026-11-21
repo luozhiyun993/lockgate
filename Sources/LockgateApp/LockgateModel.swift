@@ -1,15 +1,15 @@
 import AppKit
 import Foundation
-import GuardianCore
+import LockgateCore
 
-struct GuardianEvent: Identifiable, Codable {
+struct LockgateEvent: Identifiable, Codable {
     var id = UUID()
     var time = Date()
     var text: String
 }
 
 @MainActor
-final class GuardianModel: ObservableObject {
+final class LockgateModel: ObservableObject {
     let networkFilter = NetworkFilterController()
     @Published var savingSettings = false
     private var filterApproved = false
@@ -19,7 +19,7 @@ final class GuardianModel: ObservableObject {
     @Published private(set) var processHealth: ProcessHealth = .unknown("正在读取受保护进程…")
     @Published private(set) var transport: NetworkTransport?
     @Published var exit: ExitHealth = .unknown("正在检测出口…")
-    @Published var events: [GuardianEvent] = []
+    @Published var events: [LockgateEvent] = []
     @Published var notice = ""
     @Published var checking = false
     @Published var stopping = false
@@ -49,7 +49,7 @@ final class GuardianModel: ObservableObject {
             savingError = "无法读取原有设置：\(error.localizedDescription)"
         }
         let logURL = store.directory.appendingPathComponent("events.json")
-        if let data = try? Data(contentsOf: logURL), let saved = try? JSONDecoder().decode([GuardianEvent].self, from: data) {
+        if let data = try? Data(contentsOf: logURL), let saved = try? JSONDecoder().decode([LockgateEvent].self, from: data) {
             events = Array(saved.prefix(200))
         }
         record("应用已打开。监控处于观察模式，启用保护后才会执行急停。")
@@ -107,7 +107,7 @@ final class GuardianModel: ObservableObject {
     }
 
     var decision: Decision {
-        GuardianPolicy.evaluate(settings: state.settings, local: networkStatus, exit: exit,
+        LockgatePolicy.evaluate(settings: state.settings, local: networkStatus, exit: exit,
                                 processes: processStatus, previousIP: state.lastIP)
     }
 
@@ -148,7 +148,7 @@ final class GuardianModel: ObservableObject {
 
     func record(_ text: String) {
         if events.first?.text == text { return }
-        events.insert(GuardianEvent(text: text), at: 0)
+        events.insert(LockgateEvent(text: text), at: 0)
         events = Array(events.prefix(200))
         if let data = try? JSONEncoder().encode(events) {
             try? data.write(to: store.directory.appendingPathComponent("events.json"), options: .atomic)
@@ -283,7 +283,7 @@ final class GuardianModel: ObservableObject {
         return true
     }
 
-    func saveSettings(_ settings: GuardianSettings) {
+    func saveSettings(_ settings: LockgateSettings) {
         var settings = settings
         var preferences = settings.filterPreferences
         preferences.addresses = preferences.addresses.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { !$0.isEmpty }
@@ -303,7 +303,7 @@ final class GuardianModel: ObservableObject {
         }
     }
 
-    private func applySettings(_ settings: GuardianSettings) {
+    private func applySettings(_ settings: LockgateSettings) {
         state.settings = settings
         filterApproved = false
         revision += 1
@@ -498,17 +498,17 @@ final class GuardianModel: ObservableObject {
         let result: Decision
         switch scenario {
         case "网络超时":
-            result = GuardianPolicy.evaluate(settings: settings, local: healthy, exit: .unknown("模拟网络超时"))
+            result = LockgatePolicy.evaluate(settings: settings, local: healthy, exit: .unknown("模拟网络超时"))
         case "地区漂移":
-            result = GuardianPolicy.evaluate(settings: settings, local: healthy,
+            result = LockgatePolicy.evaluate(settings: settings, local: healthy,
                 exit: .known(ExitObservation(ip: safeIP, country: settings.country == "JP" ? "US" : "JP")))
         case "IP 不匹配":
             settings.pinEnabled = true
             settings.pinnedIP = "8.8.8.8"
-            result = GuardianPolicy.evaluate(settings: settings, local: healthy,
+            result = LockgatePolicy.evaluate(settings: settings, local: healthy,
                 exit: .known(ExitObservation(ip: "1.1.1.1", country: settings.country)))
         default:
-            result = GuardianPolicy.evaluate(settings: settings, local: .unsafe("模拟代理路径失效"), exit: healthyExit)
+            result = LockgatePolicy.evaluate(settings: settings, local: .unsafe("模拟代理路径失效"), exit: healthyExit)
         }
         sandbox.observe(result)
         var lines = ["模拟：\(scenario)", "启动门禁：\(result.mayLaunch ? "允许" : "阻止")",
