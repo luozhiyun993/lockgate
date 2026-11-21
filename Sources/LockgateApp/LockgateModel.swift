@@ -312,6 +312,9 @@ final class LockgateModel: ObservableObject {
         var settings = settings
         var preferences = settings.filterPreferences
         preferences.addresses = preferences.addresses.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { !$0.isEmpty }
+        // 系统扩展方式的开关已从界面移除；保存时一并关闭，避免旧设置里残留的开启状态无法取消。
+        preferences.enabled = false
+        preferences.includeOtherApps = false
         settings.filterPreferences = preferences
         if let error = settings.validationError { notice = error; return }
         guard !savingSettings else { return }

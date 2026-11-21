@@ -6,6 +6,7 @@ private enum Page: String, CaseIterable {
     case overview = "保护概览"
     case proxy = "代理"
     case subscriptions = "订阅"
+    case overrides = "覆写"
     case monitor = "实时监控"
     case settings = "出口与规则"
     case tests = "保护测试"
@@ -16,6 +17,7 @@ private enum Page: String, CaseIterable {
         case .overview: return "square.grid.2x2"
         case .proxy: return "bolt.horizontal.circle"
         case .subscriptions: return "list.bullet.rectangle"
+        case .overrides: return "wand.and.stars"
         case .monitor: return "waveform.path.ecg"
         case .settings: return "slider.horizontal.3"
         case .tests: return "checkmark.shield"
@@ -81,6 +83,7 @@ struct LockgateView: View {
                         case .overview: overview
                         case .proxy: ProxyPage(proxy: model.proxy, protectionEnabled: model.state.enabled)
                         case .subscriptions: SubscriptionPage(proxy: model.proxy)
+                        case .overrides: OverridePage(proxy: model.proxy)
                         case .monitor: MonitorPage(monitor: model.proxy.monitor, running: model.proxy.running)
                         case .settings: settings
                         case .tests: tests
@@ -130,6 +133,7 @@ struct LockgateView: View {
         case .overview: return "为 Claude 的每次启动与持续运行检查代理环境。"
         case .proxy: return "内置 mihomo 内核：系统代理、TUN 模式与节点选择。"
         case .subscriptions: return "管理代理订阅，更新节点与规则。"
+        case .overrides: return "用 YAML 或脚本修改订阅配置，订阅更新后依然生效。"
         case .monitor: return "查看每条连接从哪个出口出去，哪些流量走了代理。"
         case .settings: return "参考地区检查规则，可额外固定一个出口 IP。"
         case .tests: return "先安全演练，再按需验证真实急停。"
@@ -155,6 +159,8 @@ struct LockgateView: View {
                             .frame(maxWidth: .infinity, alignment: .leading).padding(12)
                             .foregroundStyle(page == item ? accent : Color.primary)
                             .background(page == item ? accent.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 9))
+                            // 透明背景不参与点击判定，显式把整行设为可点击区域。
+                            .contentShape(Rectangle())
                     }.buttonStyle(.plain)
                 }
             }
@@ -278,8 +284,7 @@ struct LockgateView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             card("网络阻断", icon: "network") {
-                NetworkFilterSettingsView(preferences: $draft.filterPreferences,
-                    controller: model.networkFilter, proxy: model.proxy, retry: model.retryNetworkFilter)
+                NetworkFilterSettingsView(preferences: $draft.filterPreferences, proxy: model.proxy)
             }
             card("指定出口 IP", icon: "pin") {
                 Toggle("启用严格 IP 匹配", isOn: $draft.pinEnabled)

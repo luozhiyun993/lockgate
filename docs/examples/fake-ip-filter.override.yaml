@@ -1,0 +1,15 @@
+# Lockgate YAML 覆写：Fake IP 过滤。
+# DNS 由 Lockgate 接管，订阅/本地配置里的 dns 不生效，所以这部分要放在「覆写」页。
+# 列表里的域名会拿到真实 IP 而不是 198.18.x.x 的假 IP。
+dns:
+  fake-ip-filter:
+    - "*.lan"
+    - "*.local"
+    - localhost
+    - "time.*.com"
+    - "ntp.*.com"
+    - geosite:private
+    - geosite:connectivity-check
+    - geosite:category-ntp
+    # 需要真实 IP 的域名加在下面，例如游戏联机、内网穿透、部分银行客户端
+    # - "+.example.com"

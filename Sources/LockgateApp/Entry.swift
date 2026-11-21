@@ -7,7 +7,9 @@ import Darwin
 enum LockgateEntry {
     @MainActor
     static func main() {
-        if CommandLine.arguments.contains("--guarded-cli") {
+        if CommandLine.arguments.contains(OverrideRunner.workerFlag) {
+            OverrideRunner.workerMain()
+        } else if CommandLine.arguments.contains("--guarded-cli") {
             CLIEntry.run()
         } else {
             let others = NSRunningApplication.runningApplications(withBundleIdentifier: "dev.local.lockgate")

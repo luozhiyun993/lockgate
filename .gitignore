@@ -2,3 +2,6 @@
 dist/
 .DS_Store
 .swiftpm/
+
+# 带真实节点的个人配置，不能进公开仓库
+docs/examples/custom-profile.yaml

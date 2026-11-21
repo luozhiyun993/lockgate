@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import LockgateCore
 
@@ -39,6 +40,7 @@ struct ProxyPage: View {
     @State private var portText = ""
     @State private var showLogs = false
     @State private var confirmRevoke = false
+    @State private var copiedCommand = false
 
     var body: some View {
         Group {
@@ -60,7 +62,11 @@ struct ProxyPage: View {
                     }
                 }
                 if proxy.settings.active == nil {
-                    Text("还没有订阅。请先到「订阅」页添加。").font(.caption).foregroundStyle(.secondary)
+                    Text("还没有订阅。添加后内核会自动启动。").font(.caption).foregroundStyle(.secondary)
+                } else if !proxy.running, !proxy.busy {
+                    Text(proxy.stoppedByUser ? "已手动停止。下次打开 Lockgate 时内核会自动启动。"
+                         : "内核随 Lockgate 一起启动；系统代理和 TUN 按下面开关的状态接管流量。")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 if !proxy.running, proxy.systemProxyApplied {
                     HStack {
@@ -76,14 +82,16 @@ struct ProxyPage: View {
             }
 
             ProxyCard(title: "接管方式", icon: "arrow.triangle.branch") {
-                Toggle("系统代理", isOn: Binding(get: { proxy.settings.systemProxy }, set: { proxy.setSystemProxy($0) }))
-                    .disabled(proxy.busy)
-                Text("把 macOS 的 HTTP / HTTPS / SOCKS 代理指向内置代理，只绕过本机和局域网地址。")
-                    .font(.caption).foregroundStyle(.secondary)
-                Toggle("TUN 模式", isOn: Binding(get: { proxy.settings.tun }, set: { proxy.setTun($0) }))
-                    .disabled(proxy.busy)
-                Text("接管全部系统流量，包括不遵循系统代理的命令行程序。首次开启需要输入一次管理员密码，之后不再询问。")
-                    .font(.caption).foregroundStyle(.secondary)
+                switchRow("系统代理", "把 macOS 的 HTTP / HTTPS / SOCKS 代理指向内置代理，只绕过本机和局域网地址。",
+                          isOn: Binding(get: { proxy.settings.systemProxy }, set: { proxy.setSystemProxy($0) }))
+                Divider()
+                switchRow("TUN 模式", "接管全部系统流量，包括不遵循系统代理的命令行程序。首次开启需要输入一次管理员密码，之后不再询问。",
+                          isOn: Binding(get: { proxy.settings.tun }, set: { proxy.setTun($0) }))
+                if proxy.running, proxy.settings.tun {
+                    Label("TUN 网卡：\(proxy.tunInterface ?? (proxy.tunInterfaceMissing ? "内核未报告" : "正在获取…"))", systemImage: "cable.connector")
+                        .font(.caption).foregroundStyle(proxy.tunInterface == nil ? Color.secondary : Color.green)
+                        .textSelection(.enabled)
+                }
                 if proxy.tunAuthorized {
                     HStack {
                         Text("已安装 TUN 特权内核：/Library/Application Support/Lockgate/core/mihomo")
@@ -109,6 +117,16 @@ struct ProxyPage: View {
                         .disabled(proxy.busy || Int(portText) == proxy.settings.mixedPort)
                     Text("HTTP 与 SOCKS5 共用，仅监听 127.0.0.1。").font(.caption).foregroundStyle(.secondary)
                 }
+                Divider()
+                HStack {
+                    Button { copyTerminalCommand() } label: {
+                        Label(copiedCommand ? "已复制" : "复制终端代理命令", systemImage: copiedCommand ? "checkmark" : "terminal")
+                    }
+                    Text(proxy.settings.terminalCommand).font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                }
+                Text("粘贴到终端后，只有那个终端窗口里的命令行程序走内置代理，与系统代理和 TUN 开关无关。\(proxy.running ? "" : "代理启动后才可用。")")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
 
             if proxy.running {
@@ -147,6 +165,8 @@ struct ProxyPage: View {
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
 
+            GeoResourcesCard(proxy: proxy)
+
             ProxyCard(title: "内核日志", icon: "text.alignleft") {
                 DisclosureGroup(showLogs ? "收起" : "显示最近 \(min(proxy.logs.count, 60)) 行", isExpanded: $showLogs) {
                     VStack(alignment: .leading, spacing: 4) {
@@ -174,6 +194,18 @@ struct ProxyPage: View {
     private var detail: String {
         guard let subscription = proxy.settings.active else { return "未选择订阅" }
         return "订阅「\(subscription.name)」 · 端口 \(proxy.settings.mixedPort)"
+    }
+
+    /// 左边标题和说明、右边滑动开关的一行。
+    private func switchRow(_ title: String, _ caption: String, isOn: Binding<Bool>) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.system(size: 13, weight: .medium))
+                Text(caption).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 12)
+            Toggle(title, isOn: isOn).labelsHidden().toggleStyle(.switch).disabled(proxy.busy)
+        }
     }
 
     private var coreTitle: String {
@@ -237,6 +269,7 @@ struct SubscriptionPage: View {
     @State private var name = ""
     @State private var url = ""
     @State private var removing: Subscription?
+    @State private var viewing: ConfigDocument?
 
     var body: some View {
         Group {
@@ -255,6 +288,12 @@ struct SubscriptionPage: View {
                 }
                 Text("支持 Clash / mihomo 配置订阅（沿用其中的策略组和规则），以及只含节点分享链接的订阅（由 Lockgate 生成「除本机和局域网外全部走代理」的规则）。订阅地址通常带有令牌，只保存在本机，界面和事件记录只显示主机名。")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Divider()
+                HStack {
+                    Button { importLocal() } label: { Label("导入本地配置…", systemImage: "square.and.arrow.down") }
+                    Text("选择本机的 Clash / mihomo 配置文件（YAML / JSON）或节点链接列表。内容会复制保存，之后修改原文件需要点「重新导入」。")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             ProxyCard(title: "我的订阅", icon: "list.bullet.rectangle") {
@@ -263,7 +302,12 @@ struct SubscriptionPage: View {
                 }
                 ForEach(proxy.settings.subscriptions) { subscription in
                     row(subscription)
-                    if subscription.id != proxy.settings.subscriptions.last?.id { Divider() }
+                    Divider()
+                }
+                HStack {
+                    FinalConfigButton(proxy: proxy)
+                    Text("当前订阅加上覆写和 Lockgate 接管项之后，内核实际使用的配置。")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
 
@@ -277,6 +321,10 @@ struct SubscriptionPage: View {
                 }.frame(width: 260)
                 Text("仅在 Lockgate 运行时更新。正在使用的订阅更新后会让内核重新读取配置，现有连接会断开重连。")
                     .font(.caption).foregroundStyle(.secondary)
+                Divider()
+                Toggle("本地配置文件修改后自动重新导入", isOn: Binding(get: { proxy.settings.watchLocalFiles }, set: { proxy.setWatchLocalFiles($0) }))
+                Text("保存文件后几秒内自动生效，不用再点「重新导入」。新内容有错误时继续使用原来的配置，并在该条目下显示原因。")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
         .alert("删除订阅？", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } })) {
@@ -286,6 +334,7 @@ struct SubscriptionPage: View {
                 removing = nil
             }
         } message: { Text("会删除「\(removing?.name ?? "")」及其已下载的节点配置。") }
+        .sheet(item: $viewing) { document in ConfigViewer(document: document) { viewing = nil } }
     }
 
     private func row(_ subscription: Subscription) -> some View {
@@ -314,14 +363,33 @@ struct SubscriptionPage: View {
             if !active {
                 Button("使用") { proxy.activate(subscription.id) }.disabled(proxy.busy)
             }
-            Button("更新") { Task { await proxy.updateSubscription(subscription.id) } }
+            Button("查看") {
+                viewing = ConfigDocument(
+                    title: "\(subscription.name) · 原始内容",
+                    note: "\(subscription.isLocal ? "导入时" : "最近一次更新时")保存在本机的内容，未经覆写和 Lockgate 处理。其中包含节点的服务器地址和密码，分享前请留意。",
+                    text: proxy.subscriptionContent(subscription))
+            }
+            Button(subscription.isLocal ? "重新导入" : "更新") { Task { await proxy.updateSubscription(subscription.id) } }
                 .disabled(proxy.updating.contains(subscription.id))
             Button("删除", role: .destructive) { removing = subscription }
         }.padding(.vertical, 4)
     }
 
+    private func importLocal() {
+        let panel = NSOpenPanel()
+        panel.title = "导入本地配置"
+        panel.prompt = "导入"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        guard panel.runModal() == .OK else { return }
+        for file in panel.urls { proxy.importLocal(file) }
+    }
+
     private func meta(_ subscription: Subscription) -> String {
-        let updated = subscription.updatedAt.map { "更新于 \($0.formatted(date: .abbreviated, time: .shortened))" } ?? "尚未更新"
+        let updated = subscription.updatedAt.map {
+            "\(subscription.isLocal ? "导入于" : "更新于") \($0.formatted(date: .abbreviated, time: .shortened))"
+        } ?? "尚未更新"
         return "\(subscription.displayHost) · \(updated)"
     }
 }
@@ -338,6 +406,17 @@ struct ProxySidebarStatus: View {
 }
 
 /// 菜单栏中的代理开关。
+extension ProxyPage {
+    fileprivate func copyTerminalCommand() {
+        ProxyModel.copyToPasteboard(proxy.settings.terminalCommand)
+        copiedCommand = true
+        Task {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            copiedCommand = false
+        }
+    }
+}
+
 struct ProxyMenuItems: View {
     @ObservedObject var proxy: ProxyModel
 
@@ -352,5 +431,6 @@ struct ProxyMenuItems: View {
             .disabled(proxy.busy)
         Toggle("TUN 模式", isOn: Binding(get: { proxy.settings.tun }, set: { proxy.setTun($0) }))
             .disabled(proxy.busy)
+        Button("复制终端代理命令") { ProxyModel.copyToPasteboard(proxy.settings.terminalCommand) }
     }
 }

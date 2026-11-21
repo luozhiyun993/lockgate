@@ -17,6 +17,14 @@ struct CoreBinary: Equatable {
 }
 
 /// mihomo 内核文件的位置、校验、提权安装与升级。全部为阻塞调用，请在后台任务中使用。
+struct GeoFile: Identifiable, Equatable {
+    var id: String { title }
+    let title: String
+    let name: String
+    let modified: Date
+    let size: Int64
+}
+
 enum MihomoCore {
     static let support = StateStore.defaultDirectory
     static let userCore = support.appendingPathComponent("core/mihomo")
@@ -191,6 +199,18 @@ enum MihomoCore {
             if !FileManager.default.fileExists(atPath: target.path) {
                 try? FileManager.default.copyItem(at: source.appendingPathComponent(name), to: target)
             }
+        }
+    }
+
+    /// 数据目录里已有的地理数据库文件（文件名不区分大小写，与内核的查找方式一致）。
+    static func geoFiles(in home: URL) -> [GeoFile] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: home.path)) ?? []
+        return [("MMDB", ["geoip.metadb", "country.mmdb"]), ("GeoSite", ["geosite.dat"]),
+                ("GeoIP", ["geoip.dat"]), ("ASN", ["asn.mmdb"])].compactMap { title, candidates in
+            guard let name = names.first(where: { candidates.contains($0.lowercased()) }),
+                  let attributes = try? FileManager.default.attributesOfItem(atPath: home.appendingPathComponent(name).path),
+                  let modified = attributes[.modificationDate] as? Date else { return nil }
+            return GeoFile(title: title, name: name, modified: modified, size: (attributes[.size] as? NSNumber)?.int64Value ?? 0)
         }
     }
 

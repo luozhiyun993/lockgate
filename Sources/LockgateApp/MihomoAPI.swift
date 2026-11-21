@@ -114,6 +114,19 @@ struct MihomoAPI {
         _ = try await request("PUT", "/proxies/\(Self.segment(group))", body: ["name": node])
     }
 
+    /// TUN 模式下内核创建的网卡名，例如 utun5；未创建时为 nil。
+    func tunDevice() async -> String? {
+        guard let data = try? await request("GET", "/configs", timeout: 3),
+              let tun = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["tun"] as? [String: Any],
+              tun["enable"] as? Bool == true, let device = tun["device"] as? String, !device.isEmpty else { return nil }
+        return device
+    }
+
+    /// 让内核按 geox-url 重新下载地理数据库；内容没有变化的文件会跳过。
+    func updateGeo() async throws {
+        _ = try await request("POST", "/configs/geo", body: [:], timeout: 300)
+    }
+
     func setMode(_ mode: ProxyMode) async throws {
         _ = try await request("PATCH", "/configs", body: ["mode": mode.rawValue])
     }

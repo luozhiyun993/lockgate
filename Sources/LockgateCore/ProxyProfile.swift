@@ -82,9 +82,12 @@ public struct Subscription: Codable, Equatable, Identifiable {
     public var updatedAt: Date?
     public var usage: SubscriptionUsage?
     public var lastError: String?
+    /// 从本地文件导入时记录原文件位置，用于重新导入；此时 `url` 为空。
+    public var localPath: String?
 
     public init(id: UUID = UUID(), name: String, url: String, kind: SubscriptionKind = .profile,
-                updatedAt: Date? = nil, usage: SubscriptionUsage? = nil, lastError: String? = nil) {
+                updatedAt: Date? = nil, usage: SubscriptionUsage? = nil, lastError: String? = nil,
+                localPath: String? = nil) {
         self.id = id
         self.name = name
         self.url = url
@@ -92,6 +95,24 @@ public struct Subscription: Codable, Equatable, Identifiable {
         self.updatedAt = updatedAt
         self.usage = usage
         self.lastError = lastError
+        self.localPath = localPath
+    }
+
+    /// 本地导入的配置，没有订阅地址，不参与自动更新。
+    public var isLocal: Bool { url.isEmpty }
+
+    public static let maximumSize = 32 * 1024 * 1024
+
+    /// 读取并识别本地配置文件。只接受普通文件，内容需是 Clash / mihomo 配置或节点分享链接列表。
+    public static func readLocal(_ file: URL) throws -> (data: Data, kind: SubscriptionKind) {
+        let values = try file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+        guard values.isRegularFile == true else { throw ProfileError.notAFile }
+        guard let size = values.fileSize, size > 0, size <= maximumSize else { throw ProfileError.badSize }
+        let data = try Data(contentsOf: file)
+        guard let kind = ProfileComposer.kind(of: String(decoding: data, as: UTF8.self)) else {
+            throw ProfileError.unrecognized
+        }
+        return (data, kind)
     }
 
     /// 仅接受带主机名的 http / https 地址。
@@ -105,13 +126,100 @@ public struct Subscription: Codable, Equatable, Identifiable {
 
     /// 订阅地址通常带令牌，界面和日志只显示主机名。
     public var displayHost: String {
-        URL(string: url)?.host ?? "未知地址"
+        if isLocal { return "本地文件" + (localPath.map { " \(URL(fileURLWithPath: $0).lastPathComponent)" } ?? "") }
+        return URL(string: url)?.host ?? "未知地址"
+    }
+}
+
+public enum OverrideKind: String, Codable {
+    case yaml, script
+
+    public var title: String { self == .yaml ? "YAML 覆写" : "脚本覆写" }
+}
+
+public struct OverrideItem: Codable, Equatable, Identifiable {
+    public var id: UUID
+    public var name: String
+    public var kind: OverrideKind
+    public var enabled: Bool
+    public var updatedAt: Date
+
+    public init(id: UUID = UUID(), name: String, kind: OverrideKind, enabled: Bool = true, updatedAt: Date = Date()) {
+        self.id = id
+        self.name = name
+        self.kind = kind
+        self.enabled = enabled
+        self.updatedAt = updatedAt
+    }
+}
+
+/// 地理数据库（GeoIP / GeoSite / ASN）的下载地址和更新方式，对应 mihomo 的 geox-url 等选项。
+public struct GeoSettings: Codable, Equatable {
+    private static let base = "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/"
+    public static let defaultGeoIP = base + "geoip.dat"
+    public static let defaultGeoSite = base + "geosite.dat"
+    public static let defaultMMDB = base + "geoip.metadb"
+    public static let defaultASN = base + "GeoLite2-ASN.mmdb"
+
+    public var geoip = GeoSettings.defaultGeoIP
+    public var geosite = GeoSettings.defaultGeoSite
+    public var mmdb = GeoSettings.defaultMMDB
+    public var asn = GeoSettings.defaultASN
+    /// true 时 GEOIP 规则使用 GeoIP.dat；false 时使用 MMDB（geoip.metadb）。
+    public var datMode = false
+    public var autoUpdate = false
+    public var intervalHours = 24
+
+    public init() {}
+
+    enum CodingKeys: String, CodingKey { case geoip, geosite, mmdb, asn, datMode, autoUpdate, intervalHours }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        geoip = try values.decodeIfPresent(String.self, forKey: .geoip) ?? GeoSettings.defaultGeoIP
+        geosite = try values.decodeIfPresent(String.self, forKey: .geosite) ?? GeoSettings.defaultGeoSite
+        mmdb = try values.decodeIfPresent(String.self, forKey: .mmdb) ?? GeoSettings.defaultMMDB
+        asn = try values.decodeIfPresent(String.self, forKey: .asn) ?? GeoSettings.defaultASN
+        datMode = try values.decodeIfPresent(Bool.self, forKey: .datMode) ?? false
+        autoUpdate = try values.decodeIfPresent(Bool.self, forKey: .autoUpdate) ?? false
+        intervalHours = try values.decodeIfPresent(Int.self, forKey: .intervalHours) ?? 24
+    }
+
+    /// 下载地址必须是 https；http 只允许指向本机。
+    public static func isValidURL(_ text: String) -> Bool {
+        guard let components = URLComponents(string: text), let host = components.host, !host.isEmpty,
+              !text.contains(where: \.isWhitespace) else { return false }
+        switch components.scheme?.lowercased() {
+        case "https": return true
+        case "http": return host == "127.0.0.1" || host == "localhost"
+        default: return false
+        }
+    }
+
+    /// 第一处不合法的设置的说明；全部合法时为 nil。
+    public var problem: String? {
+        for (title, value) in [("GeoIP", geoip), ("GeoSite", geosite), ("MMDB", mmdb), ("ASN", asn)]
+        where !GeoSettings.isValidURL(value) {
+            return "\(title) 数据库地址无效，需要是 https 链接。"
+        }
+        if !(1...720).contains(intervalHours) { return "更新间隔需在 1–720 小时之间。" }
+        return nil
+    }
+
+    /// 写入内核配置的选项。
+    public var config: [(String, Any)] {
+        [
+            ("geodata-mode", datMode),
+            ("geo-auto-update", autoUpdate),
+            ("geo-update-interval", intervalHours),
+            ("geox-url", ["geoip": geoip, "geosite": geosite, "mmdb": mmdb, "asn": asn])
+        ]
     }
 }
 
 public struct ProxySettings: Codable, Equatable {
     public var coreEnabled = false
-    public var systemProxy = true
+    public var systemProxy = false
     public var tun = false
     public var mode = ProxyMode.rule
     public var mixedPort = 17890
@@ -120,17 +228,35 @@ public struct ProxySettings: Codable, Equatable {
     public var subscriptions: [Subscription] = []
     /// 订阅 ID → 策略组 → 选中的节点。
     public var selections: [String: [String: String]] = [:]
+    /// 覆写，按列表顺序依次应用到当前订阅。
+    public var overrides: [OverrideItem] = []
+    public var geo = GeoSettings()
+    /// 导入的本地配置文件被修改后自动重新导入。
+    public var watchLocalFiles = true
+    /// 内核改为随应用启动之后置为 true；旧设置文件里没有这一项，用来做一次性迁移。
+    public var coreFollowsApp = true
 
     public init() {}
 
+    /// 旧版本里「代理已停止」意味着系统代理和 TUN 都没有生效。内核改为随应用启动后，
+    /// 为了不让升级后第一次打开就突然接管流量，把当时没有生效的接管开关关掉。
+    public mutating func migrateToCoreFollowsApp() {
+        guard !coreFollowsApp else { return }
+        if !coreEnabled {
+            systemProxy = false
+            tun = false
+        }
+        coreFollowsApp = true
+    }
+
     enum CodingKeys: String, CodingKey {
-        case coreEnabled, systemProxy, tun, mode, mixedPort, autoUpdateHours, activeSubscription, subscriptions, selections
+        case coreEnabled, systemProxy, tun, mode, mixedPort, autoUpdateHours, activeSubscription, subscriptions, selections, overrides, geo, watchLocalFiles, coreFollowsApp
     }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         coreEnabled = try values.decodeIfPresent(Bool.self, forKey: .coreEnabled) ?? false
-        systemProxy = try values.decodeIfPresent(Bool.self, forKey: .systemProxy) ?? true
+        systemProxy = try values.decodeIfPresent(Bool.self, forKey: .systemProxy) ?? false
         tun = try values.decodeIfPresent(Bool.self, forKey: .tun) ?? false
         mode = try values.decodeIfPresent(ProxyMode.self, forKey: .mode) ?? .rule
         mixedPort = try values.decodeIfPresent(Int.self, forKey: .mixedPort) ?? 17890
@@ -138,6 +264,10 @@ public struct ProxySettings: Codable, Equatable {
         activeSubscription = try values.decodeIfPresent(UUID.self, forKey: .activeSubscription)
         subscriptions = try values.decodeIfPresent([Subscription].self, forKey: .subscriptions) ?? []
         selections = try values.decodeIfPresent([String: [String: String]].self, forKey: .selections) ?? [:]
+        overrides = try values.decodeIfPresent([OverrideItem].self, forKey: .overrides) ?? []
+        geo = try values.decodeIfPresent(GeoSettings.self, forKey: .geo) ?? GeoSettings()
+        watchLocalFiles = try values.decodeIfPresent(Bool.self, forKey: .watchLocalFiles) ?? true
+        coreFollowsApp = try values.decodeIfPresent(Bool.self, forKey: .coreFollowsApp) ?? false
     }
 
     public var active: Subscription? {
@@ -145,6 +275,12 @@ public struct ProxySettings: Codable, Equatable {
     }
 
     public static func isValidPort(_ port: Int) -> Bool { (1024...65535).contains(port) }
+
+    /// 让当前终端窗口里的命令行程序走内置代理的命令。
+    public var terminalCommand: String {
+        let address = "http://127.0.0.1:\(mixedPort)"
+        return "export https_proxy=\(address) http_proxy=\(address) all_proxy=\(address)"
+    }
 }
 
 public struct ProxyStore {
@@ -181,6 +317,26 @@ public struct ProxyStore {
         try? FileManager.default.removeItem(at: profileURL(id))
     }
 
+    public var overrides: URL { directory.appendingPathComponent("overrides") }
+
+    public func overrideURL(_ item: OverrideItem) -> URL {
+        overrides.appendingPathComponent("\(item.id.uuidString).\(item.kind == .yaml ? "yaml" : "js")")
+    }
+
+    public func loadOverride(_ item: OverrideItem) -> String {
+        (try? String(contentsOf: overrideURL(item), encoding: .utf8)) ?? ""
+    }
+
+    public func saveOverride(_ content: String, item: OverrideItem) throws {
+        try FileManager.default.createDirectory(at: overrides, withIntermediateDirectories: true,
+                                               attributes: [.posixPermissions: 0o700])
+        try Self.writePrivate(Data(content.utf8), to: overrideURL(item))
+    }
+
+    public func removeOverride(_ item: OverrideItem) {
+        try? FileManager.default.removeItem(at: overrideURL(item))
+    }
+
     /// 订阅和配置含有节点凭据，统一按 0600 写入。
     public static func writePrivate(_ data: Data, to url: URL) throws {
         try data.write(to: url, options: .atomic)
@@ -190,7 +346,7 @@ public struct ProxyStore {
 
 // MARK: - 配置合成
 
-public struct CoreRuntime: Equatable {
+public struct CoreRuntime: Equatable, Codable {
     public var mixedPort: Int
     public var controllerPort: Int
     public var secret: String
@@ -198,8 +354,11 @@ public struct CoreRuntime: Equatable {
     public var tun: Bool
     /// 内核阻断要管控的地址；nil 表示不启用。
     public var gate: [String]?
+    public var geo: GeoSettings
 
-    public init(mixedPort: Int, controllerPort: Int, secret: String, mode: ProxyMode, tun: Bool, gate: [String]? = nil) {
+    public init(mixedPort: Int, controllerPort: Int, secret: String, mode: ProxyMode, tun: Bool, gate: [String]? = nil,
+                geo: GeoSettings = GeoSettings()) {
+        self.geo = geo
         self.mixedPort = mixedPort
         self.controllerPort = controllerPort
         self.secret = secret
@@ -212,11 +371,15 @@ public struct CoreRuntime: Equatable {
 public enum ProfileError: Error, Equatable, LocalizedError {
     case unrecognized
     case invalidJSON
+    case notAFile
+    case badSize
 
     public var errorDescription: String? {
         switch self {
         case .unrecognized: return "订阅内容无法识别：既不是 Clash / mihomo 配置，也不是节点分享链接列表。"
         case .invalidJSON: return "订阅内容是 JSON 格式但无法解析。"
+        case .notAFile: return "选择的不是普通文件。"
+        case .badSize: return "文件为空或超过 32 MB。"
         }
     }
 }
@@ -234,7 +397,8 @@ public enum ProfileComposer {
         "external-controller", "external-controller-tls", "external-controller-unix",
         "external-controller-pipe", "external-controller-cors", "external-ui", "external-ui-name",
         "external-ui-url", "external-doh-server", "secret", "tun", "listeners", "tunnels",
-        "mode", "log-level", "ipv6", "interface-name", "routing-mark", "profile", "dns", "find-process-mode"
+        "mode", "log-level", "ipv6", "interface-name", "routing-mark", "profile", "dns", "find-process-mode",
+        "geodata-mode", "geo-auto-update", "geo-update-interval", "geox-url"
     ]
 
     private static let privateRules = [
@@ -363,6 +527,11 @@ public enum ProfileComposer {
         return output.joined(separator: "\n")
     }
 
+    /// 节点列表订阅的可读形式：base64 编码的内容解码后返回。
+    public static func readableNodeList(_ text: String) -> String {
+        decodedNodeList(normalized(text).trimmingCharacters(in: .whitespacesAndNewlines)) ?? text
+    }
+
     private static func decodedNodeList(_ text: String) -> String? {
         if text.contains("://") { return text }
         var compact = text.filter { !$0.isWhitespace }
@@ -409,6 +578,53 @@ public enum ProfileComposer {
                      "default-nameserver": ["223.5.5.5", "119.29.29.29", "1.1.1.1"],
                      "nameserver": ["https://doh.pub/dns-query", "https://dns.alidns.com/dns-query",
                                     "https://1.1.1.1/dns-query"]] as [String: Any])
+        ] + runtime.geo.config
+    }
+
+    /// 用户覆写可以改动的接管项。其余接管项（端口、控制接口、局域网访问、模式等）在覆写之后仍由 Lockgate 强制设定。
+    public static let overridableKeys: Set<String> = [
+        "dns", "ipv6", "log-level", "tun", "interface-name", "routing-mark", "listeners", "tunnels",
+        "authentication", "skip-auth-prefixes",
+        "geodata-mode", "geo-auto-update", "geo-update-interval", "geox-url"
+    ]
+
+    /// 覆写流程第一步：丢弃订阅里的接管项，填入 Lockgate 的默认值，作为覆写的输入。
+    public static func prepared(_ source: [String: Any], runtime: CoreRuntime) -> [String: Any] {
+        var object = source
+        for key in managedKeys { object.removeValue(forKey: key) }
+        for (key, value) in overrides(runtime) { object[key] = value }
+        return object
+    }
+
+    /// 覆写流程最后一步：重新强制不可覆写的接管项，TUN 开关以 Lockgate 的设置为准，再注入阻断规则。
+    public static func finalized(_ overridden: [String: Any], runtime: CoreRuntime) -> String {
+        var object = overridden
+        for key in managedKeys.subtracting(overridableKeys) { object.removeValue(forKey: key) }
+        for (key, value) in overrides(runtime) where !overridableKeys.contains(key) { object[key] = value }
+        var tun = overrides(runtime).first { $0.0 == "tun" }?.1 as? [String: Any] ?? [:]
+        for (key, value) in object["tun"] as? [String: Any] ?? [:] { tun[key] = value }
+        tun["enable"] = runtime.tun
+        object["tun"] = tun
+        if let gate = runtime.gate {
+            object["proxy-groups"] = [gateGroupObject] + (object["proxy-groups"] as? [Any] ?? [])
+            object["rules"] = gateRules(gate) + (object["rules"] as? [Any] ?? [])
+        }
+        return json(object) + "\n"
+    }
+
+    /// 节点列表订阅在套用接管项之前的基础配置。
+    public static func providerObject(path: String) -> [String: Any] {
+        [
+            "proxy-providers": ["subscription": [
+                "type": "file", "path": path,
+                "health-check": ["enable": true, "url": testURL, "interval": 600, "lazy": true]
+            ] as [String: Any]],
+            "proxy-groups": [
+                ["name": "PROXY", "type": "select", "proxies": ["AUTO", "DIRECT"], "use": ["subscription"]] as [String: Any],
+                ["name": "AUTO", "type": "url-test", "use": ["subscription"], "url": testURL,
+                 "interval": 300, "tolerance": 50] as [String: Any]
+            ],
+            "rules": privateRules + ["MATCH,PROXY"]
         ]
     }
 
@@ -447,18 +663,7 @@ public enum ProfileComposer {
 
     /// 节点列表订阅：以本地文件作为节点来源，生成选择组、自动测速组和「除私有地址外全部走代理」的规则。
     public static func compose(providerPath: String, runtime: CoreRuntime) -> String {
-        var object: [String: Any] = [
-            "proxy-providers": ["subscription": [
-                "type": "file", "path": providerPath,
-                "health-check": ["enable": true, "url": testURL, "interval": 600, "lazy": true]
-            ] as [String: Any]],
-            "proxy-groups": [
-                ["name": "PROXY", "type": "select", "proxies": ["AUTO", "DIRECT"], "use": ["subscription"]] as [String: Any],
-                ["name": "AUTO", "type": "url-test", "use": ["subscription"], "url": testURL,
-                 "interval": 300, "tolerance": 50] as [String: Any]
-            ],
-            "rules": privateRules + ["MATCH,PROXY"]
-        ]
+        var object = providerObject(path: providerPath)
         for (key, value) in overrides(runtime) { object[key] = value }
         if let gate = runtime.gate {
             object["proxy-groups"] = [gateGroupObject] + (object["proxy-groups"] as? [Any] ?? [])

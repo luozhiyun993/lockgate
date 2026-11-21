@@ -114,10 +114,40 @@ final class ProxyProfileTests: XCTestCase {
         XCTAssertEqual(Subscription(name: "a", url: "https://example.com/sub?token=abc").displayHost, "example.com")
     }
 
+    func testLocalConfigImport() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        func file(_ name: String, _ content: String) throws -> URL {
+            let url = directory.appendingPathComponent(name)
+            try Data(content.utf8).write(to: url)
+            return url
+        }
+        let full = try Subscription.readLocal(file("我的 配置.yaml", profile))
+        XCTAssertEqual(full.kind, .profile)
+        XCTAssertEqual(String(decoding: full.data, as: UTF8.self), profile)
+        XCTAssertEqual(try Subscription.readLocal(file("nodes.txt", "ss://YWVzLTEyOC1nY206eA@192.0.2.9:8388#n\n")).kind, .provider)
+        XCTAssertEqual(try Subscription.readLocal(file("c.json", #"{"proxies":[],"rules":[]}"#)).kind, .profile)
+
+        XCTAssertThrowsError(try Subscription.readLocal(file("notes.txt", "hello"))) { XCTAssertEqual($0 as? ProfileError, .unrecognized) }
+        XCTAssertThrowsError(try Subscription.readLocal(file("empty.yaml", ""))) { XCTAssertEqual($0 as? ProfileError, .badSize) }
+        XCTAssertThrowsError(try Subscription.readLocal(directory)) { XCTAssertEqual($0 as? ProfileError, .notAFile) }
+        XCTAssertThrowsError(try Subscription.readLocal(directory.appendingPathComponent("missing.yaml")))
+
+        let local = Subscription(name: "我的 配置", url: "", localPath: directory.appendingPathComponent("我的 配置.yaml").path)
+        XCTAssertTrue(local.isLocal)
+        XCTAssertEqual(local.displayHost, "本地文件 我的 配置.yaml")
+        XCTAssertEqual(try JSONDecoder().decode(Subscription.self, from: JSONEncoder().encode(local)), local)
+        let remote = try JSONDecoder().decode(Subscription.self,
+            from: Data(#"{"id":"6F9619FF-8B86-D011-B42D-00C04FC964FF","name":"a","url":"https://example.com/s","kind":"profile"}"#.utf8))
+        XCTAssertFalse(remote.isLocal)
+        XCTAssertNil(remote.localPath)
+    }
+
     func testSettingsDecodeFillsDefaultsAndRoundTrips() throws {
         let decoded = try JSONDecoder().decode(ProxySettings.self, from: Data(#"{"tun":true}"#.utf8))
         XCTAssertTrue(decoded.tun)
-        XCTAssertTrue(decoded.systemProxy)
+        XCTAssertFalse(decoded.systemProxy)
         XCTAssertEqual(decoded.mixedPort, 17890)
         XCTAssertEqual(decoded.mode, .rule)
 
@@ -222,5 +252,72 @@ final class ProxyProfileTests: XCTestCase {
             let result = Command.run(path, ["-t", "-d", home.path, "-f", url.path])
             XCTAssertEqual(result.status, 0, result.output)
         }
+    }
+
+    func testGeoSettingsDefaultsAndValidation() throws {
+        let old = try JSONDecoder().decode(ProxySettings.self, from: Data(#"{"mixedPort":17890}"#.utf8))
+        XCTAssertEqual(old.geo, GeoSettings())
+        XCTAssertNil(GeoSettings().problem)
+        XCTAssertFalse(GeoSettings().autoUpdate)
+        var geo = GeoSettings()
+        geo.asn = "http://example.com/asn.mmdb"
+        XCTAssertNotNil(geo.problem)
+        geo.asn = "http://127.0.0.1:8080/asn.mmdb"
+        XCTAssertNil(geo.problem)
+        geo.geosite = "file:///etc/passwd"
+        XCTAssertNotNil(geo.problem)
+        geo.geosite = "https://example.com/a b.dat"
+        XCTAssertNotNil(geo.problem)
+        geo = GeoSettings()
+        geo.intervalHours = 0
+        XCTAssertNotNil(geo.problem)
+        XCTAssertEqual(try JSONDecoder().decode(GeoSettings.self, from: JSONEncoder().encode(geo)), geo)
+    }
+
+    func testGeoSettingsReplaceSubscriptionValues() throws {
+        var geo = GeoSettings()
+        geo.mmdb = "https://mirror.example/geoip.metadb"
+        geo.datMode = true
+        geo.autoUpdate = true
+        geo.intervalHours = 12
+        let custom = CoreRuntime(mixedPort: 17890, controllerPort: 51234, secret: "s", mode: .rule, tun: false, geo: geo)
+        let profile = "geodata-mode: false\ngeo-auto-update: false\ngeox-url:\n  mmdb: https://evil.example/x.mmdb\nproxies: []\nrules:\n  - MATCH,DIRECT\n"
+        let composed = try ProfileComposer.compose(profile: profile, runtime: custom)
+        XCTAssertFalse(composed.contains("evil.example"))
+        XCTAssertTrue(composed.contains(#""mmdb":"https:\/\/mirror.example\/geoip.metadb""#) || composed.contains(#""mmdb":"https://mirror.example/geoip.metadb""#))
+        XCTAssertTrue(composed.contains(#""geodata-mode":true"#) || composed.contains("geodata-mode: true"))
+        XCTAssertTrue(composed.contains("geo-update-interval"))
+        XCTAssertTrue(ProfileComposer.overridableKeys.contains("geox-url"))
+    }
+
+    func testTerminalCommandFollowsPort() {
+        var settings = ProxySettings()
+        XCTAssertEqual(settings.terminalCommand,
+                       "export https_proxy=http://127.0.0.1:17890 http_proxy=http://127.0.0.1:17890 all_proxy=http://127.0.0.1:17890")
+        settings.mixedPort = 7899
+        XCTAssertEqual(settings.terminalCommand.components(separatedBy: ":7899").count, 4)
+    }
+
+    func testCoreFollowsAppMigration() throws {
+        // 旧版本：代理已停止但 TUN 开关开着 → 升级后不能一打开就接管流量。
+        var stopped = try JSONDecoder().decode(ProxySettings.self, from: Data(#"{"coreEnabled":false,"tun":true,"systemProxy":true}"#.utf8))
+        XCTAssertFalse(stopped.coreFollowsApp)
+        stopped.migrateToCoreFollowsApp()
+        XCTAssertTrue(stopped.coreFollowsApp)
+        XCTAssertFalse(stopped.tun)
+        XCTAssertFalse(stopped.systemProxy)
+        // 旧版本：代理运行中 → 接管开关原样保留。
+        var active = try JSONDecoder().decode(ProxySettings.self, from: Data(#"{"coreEnabled":true,"tun":true,"systemProxy":false}"#.utf8))
+        active.migrateToCoreFollowsApp()
+        XCTAssertTrue(active.tun)
+        XCTAssertFalse(active.systemProxy)
+        // 已迁移过的设置不再被改动。
+        var again = try JSONDecoder().decode(ProxySettings.self, from: JSONEncoder().encode(stopped))
+        again.tun = true
+        again.coreEnabled = false
+        again.migrateToCoreFollowsApp()
+        XCTAssertTrue(again.tun)
+        XCTAssertTrue(ProxySettings().coreFollowsApp)
+        XCTAssertFalse(ProxySettings().systemProxy)
     }
 }

@@ -1,3 +1,4 @@
+import AppKit
 import Darwin
 import Foundation
 import LockgateCore
@@ -40,6 +41,13 @@ final class ProxyModel: ObservableObject {
     var onEvent: (String) -> Void = { _ in }
     let monitor = TrafficMonitor()
     @Published private(set) var gateStatus = GateStatus.off
+    @Published private(set) var overrideLogs: [String] = []
+    @Published private(set) var tunInterface: String?
+    @Published private(set) var geoFiles: [GeoFile] = []
+    @Published private(set) var geoUpdating = false
+    @Published private(set) var geoMessage: String?
+    @Published private(set) var tunInterfaceMissing = false
+    @Published private(set) var overrideMessage: String?
     private var gateAddresses: [String]?
     private var gateSyncing = false
 
@@ -49,6 +57,12 @@ final class ProxyModel: ObservableObject {
     private var runtime: CoreRuntime?
     private var generation = 0
     private var autoUpdateTask: Task<Void, Never>?
+    private var watchTask: Task<Void, Never>?
+    /// 本次运行期间用户手动停止过内核。只影响这一次，下次打开应用内核照常启动。
+    @Published private(set) var stoppedByUser = false
+    /// 本地文件上一次看到的修改时间和大小；连续两次相同才认为写入已完成。
+    private var fileSignatures: [UUID: String] = [:]
+    private var pendingSignatures: [UUID: String] = [:]
 
     init() {
         do {
@@ -57,10 +71,15 @@ final class ProxyModel: ObservableObject {
             settings = ProxySettings()
             self.error = "无法读取代理设置：\(error.localizedDescription)"
         }
+        if !settings.coreFollowsApp {
+            settings.migrateToCoreFollowsApp()
+            save()
+        }
         systemProxyApplied = MihomoCore.systemProxyPointsToCore(port: settings.mixedPort)
         Task {
             await loadCoreInfo()
-            if settings.coreEnabled { await start(interactive: false) }
+            // 内核随应用启动；系统代理和 TUN 按各自开关的状态接管。
+            if settings.active != nil { await start(interactive: false) }
         }
         autoUpdateTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 30_000_000_000)
@@ -69,13 +88,57 @@ final class ProxyModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: 900_000_000_000)
             }
         }
+        watchTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.checkLocalFiles()
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+            }
+        }
+    }
+
+    // MARK: 本地文件监视
+
+    func setWatchLocalFiles(_ enabled: Bool) {
+        settings.watchLocalFiles = enabled
+        save()
+        fileSignatures = [:]
+        pendingSignatures = [:]
+    }
+
+    /// 每 1.5 秒看一眼已导入的本地文件；修改时间或大小变了、并且内容确实与已保存的不同，就自动重新导入。
+    private func checkLocalFiles() async {
+        guard settings.watchLocalFiles else { return }
+        for subscription in settings.subscriptions {
+            guard let path = subscription.localPath, !updating.contains(subscription.id),
+                  let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+                  let modified = attributes[.modificationDate] as? Date else { continue }
+            let signature = "\(modified.timeIntervalSince1970)-\((attributes[.size] as? NSNumber)?.int64Value ?? 0)"
+            guard fileSignatures[subscription.id] != signature else { continue }
+            // 编辑器可能还在写入：等下一轮签名不再变化时再读取。
+            guard pendingSignatures[subscription.id] == signature else {
+                pendingSignatures[subscription.id] = signature
+                continue
+            }
+            pendingSignatures[subscription.id] = nil
+            fileSignatures[subscription.id] = signature
+            let id = subscription.id
+            let stored = store.profileURL(id)
+            let changed = await Task.detached {
+                guard let current = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return false }
+                return current != (try? Data(contentsOf: stored))
+            }.value
+            if changed {
+                onEvent("检测到本地配置「\(subscription.name)」的文件有改动，自动重新导入。")
+                await updateSubscription(id, silent: true)
+            }
+        }
     }
 
     var statusSummary: String {
         if busy { return "正在切换…" }
         guard running else { return "代理未运行" }
         var parts = ["代理运行中"]
-        if settings.tun { parts.append("TUN") }
+        if settings.tun { parts.append(tunInterface.map { "TUN（\($0)）" } ?? "TUN") }
         if systemProxyApplied { parts.append("系统代理") }
         return parts.joined(separator: " · ")
     }
@@ -103,6 +166,7 @@ final class ProxyModel: ObservableObject {
         do {
             try await launch(interactive: interactive)
             settings.coreEnabled = true
+            stoppedByUser = false
             save()
         } catch {
             self.error = error.localizedDescription
@@ -116,13 +180,15 @@ final class ProxyModel: ObservableObject {
         defer { busy = false }
         await halt(restoreSystemProxy: true)
         settings.coreEnabled = false
+        stoppedByUser = true
         save()
         onEvent("用户停止了内置代理。")
     }
 
-    /// 退出应用时调用：停止内核并恢复系统代理，但保留「下次启动时自动运行」的状态。
+    /// 退出应用时调用：停止内核并恢复系统代理。下次打开应用时内核会再次启动。
     func shutdown() async {
         autoUpdateTask?.cancel()
+        watchTask?.cancel()
         await halt(restoreSystemProxy: true)
     }
 
@@ -131,21 +197,36 @@ final class ProxyModel: ObservableObject {
         try await launch(interactive: interactive)
     }
 
-    private func writeConfig(_ subscription: Subscription, runtime: CoreRuntime, home: URL) throws -> URL {
+    private func writeConfig(_ subscription: Subscription, runtime: CoreRuntime, home: URL,
+                             fileName: String = "config.yaml") async throws -> URL {
         let files = FileManager.default
         try files.createDirectory(at: home, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         MihomoCore.seedGeoData(into: home)
         let source = try Data(contentsOf: store.profileURL(subscription.id))
-        let config: String
+        let providerPath = "./providers/subscription.txt"
         if subscription.kind == .provider {
             let providers = home.appendingPathComponent("providers")
             try files.createDirectory(at: providers, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             try ProxyStore.writePrivate(source, to: providers.appendingPathComponent("subscription.txt"))
-            config = ProfileComposer.compose(providerPath: "./providers/subscription.txt", runtime: runtime)
+        }
+        let steps = settings.overrides.filter(\.enabled).map {
+            OverrideStep(name: $0.name, kind: $0.kind, content: store.loadOverride($0))
+        }
+        let config: String
+        if !steps.isEmpty {
+            let output = try await OverrideRunner.run(OverrideRequest(
+                profile: String(decoding: source, as: UTF8.self), kind: subscription.kind,
+                providerPath: providerPath, steps: steps, runtime: runtime))
+            overrideLogs = output.logs
+            config = output.config
+        } else if subscription.kind == .provider {
+            overrideLogs = []
+            config = ProfileComposer.compose(providerPath: providerPath, runtime: runtime)
         } else {
+            overrideLogs = []
             config = try ProfileComposer.compose(profile: String(decoding: source, as: UTF8.self), runtime: runtime)
         }
-        let url = home.appendingPathComponent("config.yaml")
+        let url = home.appendingPathComponent(fileName)
         try ProxyStore.writePrivate(Data(config.utf8), to: url)
         return url
     }
@@ -190,9 +271,9 @@ final class ProxyModel: ObservableObject {
         guard let controllerPort = MihomoCore.freePort() else { throw CoreError("无法分配内核控制端口。") }
         let runtime = CoreRuntime(mixedPort: settings.mixedPort, controllerPort: controllerPort,
                                   secret: UUID().uuidString + UUID().uuidString, mode: settings.mode, tun: tun,
-                                  gate: gateAddresses)
+                                  gate: gateAddresses, geo: settings.geo)
         let home = MihomoCore.home(tun: tun)
-        let config = try writeConfig(subscription, runtime: runtime, home: home)
+        let config = try await writeConfig(subscription, runtime: runtime, home: home)
         try await validate(config, home: home, core: core)
 
         generation += 1
@@ -235,6 +316,9 @@ final class ProxyModel: ObservableObject {
         self.runtime = runtime
         running = true
         monitor.attach(api)
+        tunInterface = nil
+        tunInterfaceMissing = false
+        if tun { resolveTunInterface(api, generation: current) }
         await applySelections()
         onEvent("内置代理已启动：mihomo \(core.version)，订阅「\(subscription.name)」\(tun ? "，TUN 模式" : "")。")
         if settings.systemProxy {
@@ -252,6 +336,7 @@ final class ProxyModel: ObservableObject {
         api = nil
         runtime = nil
         running = false
+        tunInterface = nil
         monitor.attach(nil)
         snapshot = ProxySnapshot()
         guard let process else { return }
@@ -270,6 +355,7 @@ final class ProxyModel: ObservableObject {
         api = nil
         runtime = nil
         running = false
+        tunInterface = nil
         monitor.attach(nil)
         snapshot = ProxySnapshot()
         try? FileManager.default.removeItem(at: MihomoCore.pidFile)
@@ -466,33 +552,80 @@ final class ProxyModel: ObservableObject {
                 if settings.activeSubscription == nil { settings.activeSubscription = subscription.id }
                 save()
                 onEvent("已添加订阅「\(title)」。")
+                startAfterFirstSubscription()
             } catch { self.error = "添加订阅失败：\(error.localizedDescription)" }
         }
     }
 
+    /// 导入本地配置文件。内容会复制一份保存，之后原文件的改动不会自动生效，需要「重新导入」。
+    func importLocal(_ file: URL) {
+        error = nil
+        do {
+            let local = try Subscription.readLocal(file)
+            let title = String(file.deletingPathExtension().lastPathComponent.prefix(60))
+            let subscription = Subscription(name: title.isEmpty ? "本地配置" : title, url: "", kind: local.kind,
+                                            updatedAt: Date(), localPath: file.path)
+            try store.saveProfile(local.data, id: subscription.id)
+            settings.subscriptions.append(subscription)
+            if settings.activeSubscription == nil { settings.activeSubscription = subscription.id }
+            save()
+            onEvent("已导入本地配置「\(subscription.name)」。")
+            startAfterFirstSubscription()
+        } catch { self.error = "导入本地配置失败：\(error.localizedDescription)" }
+    }
+
+    /// 有了第一条订阅后内核就可以运行了，不用再手动启动。用户手动停止过则不打扰。
+    private func startAfterFirstSubscription() {
+        guard settings.subscriptions.count == 1, !running, !stoppedByUser else { return }
+        Task { await start(interactive: false) }
+    }
+
     func updateSubscription(_ id: UUID, silent: Bool = false) async {
-        guard !updating.contains(id), let index = settings.subscriptions.firstIndex(where: { $0.id == id }),
-              let url = Subscription.validatedURL(settings.subscriptions[index].url) else { return }
+        guard !updating.contains(id), let index = settings.subscriptions.firstIndex(where: { $0.id == id }) else { return }
+        let subscription = settings.subscriptions[index]
+        let url = Subscription.validatedURL(subscription.url)
+        guard subscription.isLocal || url != nil else { return }
         updating.insert(id)
         defer { updating.remove(id) }
-        let name = settings.subscriptions[index].name
+        let name = subscription.name
+        let previous = try? Data(contentsOf: store.profileURL(id))
+        var replaced = false
         do {
-            let fetched = try await fetch(url)
+            let fetched: Fetched
+            if let url {
+                fetched = try await fetch(url)
+            } else {
+                guard let path = subscription.localPath, FileManager.default.fileExists(atPath: path) else {
+                    throw CoreError("原文件已不存在，无法重新导入。当前保存的内容不受影响。")
+                }
+                let local = try Subscription.readLocal(URL(fileURLWithPath: path))
+                fetched = Fetched(data: local.data, kind: local.kind, usage: nil, suggestedName: nil)
+            }
             try store.saveProfile(fetched.data, id: id)
+            replaced = true
             guard let index = settings.subscriptions.firstIndex(where: { $0.id == id }) else { return }
             settings.subscriptions[index].kind = fetched.kind
             settings.subscriptions[index].updatedAt = Date()
             settings.subscriptions[index].usage = fetched.usage ?? settings.subscriptions[index].usage
             settings.subscriptions[index].lastError = nil
             save()
-            onEvent("订阅「\(name)」已更新。")
             if id == settings.activeSubscription, running { try await reloadConfig() }
+            onEvent(subscription.isLocal ? "本地配置「\(name)」已重新导入。" : "订阅「\(name)」已更新。")
         } catch {
+            // 新内容没能通过校验或重载时退回上一份，避免留下一份下次启动不了的配置。
+            if replaced, let previous {
+                try? store.saveProfile(previous, id: id)
+                if let index = settings.subscriptions.firstIndex(where: { $0.id == id }) {
+                    settings.subscriptions[index].kind = subscription.kind
+                    settings.subscriptions[index].updatedAt = subscription.updatedAt
+                }
+            }
             if let index = settings.subscriptions.firstIndex(where: { $0.id == id }) {
                 settings.subscriptions[index].lastError = error.localizedDescription
                 save()
             }
-            if !silent { self.error = "更新订阅「\(name)」失败：\(error.localizedDescription)" }
+            if silent { onEvent("\(subscription.isLocal ? "重新导入" : "更新订阅")「\(name)」失败，继续使用原来的配置：\(error.localizedDescription)") }
+            if !silent { self.error = "\(subscription.isLocal ? "重新导入" : "更新订阅")「\(name)」失败：\(error.localizedDescription)" }
         }
     }
 
@@ -500,7 +633,7 @@ final class ProxyModel: ObservableObject {
         guard settings.autoUpdateHours > 0 else { return }
         let limit = TimeInterval(settings.autoUpdateHours) * 3600
         for subscription in settings.subscriptions
-        where Date().timeIntervalSince(subscription.updatedAt ?? .distantPast) >= limit {
+        where !subscription.isLocal && Date().timeIntervalSince(subscription.updatedAt ?? .distantPast) >= limit {
             await updateSubscription(subscription.id, silent: true)
         }
     }
@@ -550,12 +683,222 @@ final class ProxyModel: ObservableObject {
         var current = runtime
         current.mode = settings.mode
         current.gate = gateAddresses
-        let config = try writeConfig(subscription, runtime: current, home: home)
+        current.geo = settings.geo
+        let config = try await writeConfig(subscription, runtime: current, home: home)
         try await validate(config, home: home, core: core)
         try await api.reload(configPath: config.path)
         self.runtime = current
         await applySelections()
         await api.closeConnections()
+    }
+
+    /// TUN 网卡在内核启动后稍晚才创建，这里等最多约 10 秒。
+    private func resolveTunInterface(_ api: MihomoAPI, generation current: Int) {
+        Task {
+            for _ in 0..<20 {
+                guard current == generation, running else { return }
+                if let name = await api.tunDevice() {
+                    guard current == generation, running else { return }
+                    tunInterface = name
+                    onEvent("TUN 网卡：\(name)。")
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+            }
+            if current == generation, running { tunInterfaceMissing = true }
+        }
+    }
+
+    static func copyToPasteboard(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    // MARK: 地理数据
+
+    private var geoHome: URL { MihomoCore.home(tun: runtime?.tun ?? settings.tun) }
+
+    func refreshGeoFiles() {
+        let home = geoHome
+        Task {
+            let files = await Task.detached { () -> [GeoFile] in
+                MihomoCore.seedGeoData(into: home)
+                return MihomoCore.geoFiles(in: home)
+            }.value
+            geoFiles = files
+        }
+    }
+
+    /// 保存地理数据设置；代理运行中会重载配置使其生效。
+    func applyGeo(_ geo: GeoSettings) {
+        guard geo != settings.geo else { return }
+        if let problem = geo.problem { error = problem; return }
+        let previous = settings.geo
+        settings.geo = geo
+        save()
+        geoMessage = nil
+        guard running else { return }
+        Task {
+            do {
+                try await reloadConfig()
+                onEvent("地理数据设置已更新并重载配置。")
+            } catch {
+                settings.geo = previous
+                save()
+                self.error = "地理数据设置未生效，已恢复原设置：\(error.localizedDescription)"
+            }
+            refreshGeoFiles()
+        }
+    }
+
+    /// 让内核立即重新下载地理数据库。下载由内核完成，因此需要代理正在运行。
+    func updateGeoData() {
+        guard let api, running, !geoUpdating else { return }
+        geoUpdating = true
+        geoMessage = "正在下载…"
+        Task {
+            do {
+                try await api.updateGeo()
+                geoMessage = "已检查更新（\(Self.clock.string(from: Date()))）。内核只下载当前规则用到的数据库，内容没有变化的文件不会重新写入。"
+                onEvent("地理数据库已更新。")
+            } catch {
+                geoMessage = "更新失败：\(error.localizedDescription)"
+            }
+            geoUpdating = false
+            refreshGeoFiles()
+        }
+    }
+
+    private static let clock: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
+
+    // MARK: 查看配置
+
+    /// 订阅保存在本机的原始内容；节点列表若是 base64 则解码后显示。
+    func subscriptionContent(_ subscription: Subscription) -> String {
+        guard let data = try? Data(contentsOf: store.profileURL(subscription.id)) else { return "" }
+        let text = String(decoding: data, as: UTF8.self)
+        return subscription.kind == .provider ? ProfileComposer.readableNodeList(text) : text
+    }
+
+    /// 订阅、覆写和 Lockgate 接管项合并后的最终配置，整理成 YAML。
+    /// 代理运行中返回内核正在使用的配置；未运行时按当前设置生成一份预览。
+    func finalConfig() async throws -> (text: String, live: Bool) {
+        let raw: String
+        let live: Bool
+        if running, let runtime {
+            raw = try String(contentsOf: MihomoCore.home(tun: runtime.tun).appendingPathComponent("config.yaml"), encoding: .utf8)
+            live = true
+        } else {
+            guard let subscription = settings.active,
+                  FileManager.default.fileExists(atPath: store.profileURL(subscription.id).path) else {
+                throw CoreError("还没有可用的订阅，无法生成配置。")
+            }
+            let home = MihomoCore.home(tun: settings.tun)
+            let preview = CoreRuntime(mixedPort: settings.mixedPort, controllerPort: 9, secret: "preview",
+                                      mode: settings.mode, tun: settings.tun, gate: gateAddresses, geo: settings.geo)
+            let file = try await writeConfig(subscription, runtime: preview, home: home, fileName: "preview.yaml")
+            defer { try? FileManager.default.removeItem(at: file) }
+            raw = try String(contentsOf: file, encoding: .utf8)
+            live = false
+        }
+        return (try await Task.detached { try OverrideEngine.readableYAML(raw) }.value, live)
+    }
+
+    // MARK: 覆写
+
+    func overrideContent(_ item: OverrideItem) -> String {
+        store.loadOverride(item)
+    }
+
+    func addOverride(_ kind: OverrideKind) -> OverrideItem? {
+        let count = settings.overrides.filter { $0.kind == kind }.count + 1
+        let item = OverrideItem(name: "\(kind.title) \(count)", kind: kind)
+        do {
+            try store.saveOverride(kind == .yaml ? OverrideEngine.yamlTemplate : OverrideEngine.scriptTemplate, item: item)
+        } catch {
+            self.error = "无法创建覆写：\(error.localizedDescription)"
+            return nil
+        }
+        settings.overrides.append(item)
+        save()
+        return item
+    }
+
+    func saveOverride(_ id: UUID, name: String, content: String) {
+        guard let index = settings.overrides.firstIndex(where: { $0.id == id }) else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { settings.overrides[index].name = String(trimmed.prefix(60)) }
+        settings.overrides[index].updatedAt = Date()
+        do { try store.saveOverride(content, item: settings.overrides[index]) } catch {
+            self.error = "无法保存覆写：\(error.localizedDescription)"
+            return
+        }
+        save()
+        applyOverrides()
+    }
+
+    func setOverrideEnabled(_ id: UUID, _ enabled: Bool) {
+        guard let index = settings.overrides.firstIndex(where: { $0.id == id }), settings.overrides[index].enabled != enabled else { return }
+        settings.overrides[index].enabled = enabled
+        save()
+        applyOverrides()
+    }
+
+    func moveOverride(_ id: UUID, by offset: Int) {
+        guard let index = settings.overrides.firstIndex(where: { $0.id == id }) else { return }
+        let target = index + offset
+        guard settings.overrides.indices.contains(target) else { return }
+        settings.overrides.swapAt(index, target)
+        save()
+        if settings.overrides[index].enabled, settings.overrides[target].enabled { applyOverrides() }
+    }
+
+    func removeOverride(_ id: UUID) {
+        guard let index = settings.overrides.firstIndex(where: { $0.id == id }) else { return }
+        let item = settings.overrides.remove(at: index)
+        store.removeOverride(item)
+        save()
+        if item.enabled { applyOverrides() }
+    }
+
+    /// 覆写变化后：代理运行中则让内核重载配置；未运行则只做一次完整校验，下次启动时生效。
+    /// 校验或重载失败时内核继续使用之前的配置。
+    private func applyOverrides() {
+        guard !busy else {
+            overrideMessage = "代理正在切换，覆写已保存，稍后重新保存即可应用。"
+            return
+        }
+        Task {
+            busy = true
+            defer { busy = false }
+            overrideMessage = "正在应用覆写…"
+            do {
+                if running {
+                    try await reloadConfig()
+                    overrideMessage = "覆写已应用，内核已重新读取配置。"
+                    onEvent("覆写已更新并应用。")
+                } else if let subscription = settings.active, let core,
+                          FileManager.default.fileExists(atPath: store.profileURL(subscription.id).path) {
+                    let home = MihomoCore.home(tun: false)
+                    let runtime = CoreRuntime(mixedPort: settings.mixedPort, controllerPort: 9, secret: "check",
+                                              mode: settings.mode, tun: false, gate: gateAddresses)
+                    let config = try await writeConfig(subscription, runtime: runtime, home: home, fileName: "check.yaml")
+                    defer { try? FileManager.default.removeItem(at: config) }
+                    try await validate(config, home: home, core: core)
+                    overrideMessage = "覆写校验通过，下次启动代理时生效。"
+                } else {
+                    overrideMessage = "覆写已保存。添加订阅并启动代理后生效。"
+                }
+            } catch {
+                overrideMessage = nil
+                self.error = running ? "覆写没有生效，内核仍在使用之前的配置：\(error.localizedDescription)"
+                    : "覆写校验未通过：\(error.localizedDescription)"
+            }
+        }
     }
 
     // MARK: 内核阻断
