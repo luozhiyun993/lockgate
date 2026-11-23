@@ -84,6 +84,20 @@ struct ProxyPage: View {
             ProxyCard(title: "接管方式", icon: "arrow.triangle.branch") {
                 switchRow("系统代理", "把 macOS 的 HTTP / HTTPS / SOCKS 代理指向内置代理，只绕过本机和局域网地址。",
                           isOn: Binding(get: { proxy.settings.systemProxy }, set: { proxy.setSystemProxy($0) }))
+                if proxy.settings.systemProxy {
+                    if proxy.systemProxyLost {
+                        HStack {
+                            Label("系统代理已被其他程序或网络变化改走，流量不再经过内置代理。", systemImage: "exclamationmark.triangle")
+                                .font(.caption).foregroundStyle(.orange)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Button("重新接管") { proxy.reclaimSystemProxy() }.controlSize(.small)
+                                .disabled(proxy.busy || !proxy.running)
+                        }
+                    }
+                    Toggle("被改走时自动恢复（1 分钟内被反复改走 3 次以上会暂停，避免与其他代理软件来回抢）",
+                           isOn: Binding(get: { proxy.settings.guardSystemProxy }, set: { proxy.setGuardSystemProxy($0) }))
+                        .font(.caption).toggleStyle(.checkbox)
+                }
                 Divider()
                 switchRow("TUN 模式", "接管全部系统流量，包括不遵循系统代理的命令行程序。首次开启需要输入一次管理员密码，之后不再询问。",
                           isOn: Binding(get: { proxy.settings.tun }, set: { proxy.setTun($0) }))

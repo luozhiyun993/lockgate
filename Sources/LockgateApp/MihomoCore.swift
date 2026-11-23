@@ -44,9 +44,10 @@ enum MihomoCore {
         #endif
     }
 
-    /// 普通模式与 TUN 模式使用各自的工作目录，避免 root 运行后留下普通模式无法写入的缓存文件。
-    static func home(tun: Bool) -> URL {
-        support.appendingPathComponent(tun ? "mihomo-tun" : "mihomo")
+    /// 特权内核与普通内核使用各自的工作目录，避免 root 运行后留下普通内核无法写入的缓存文件。
+    /// 特权内核无论是否开启 TUN 都用同一个目录（沿用旧名 mihomo-tun）。
+    static func home(privileged: Bool) -> URL {
+        support.appendingPathComponent(privileged ? "mihomo-tun" : "mihomo")
     }
 
     static func run(_ executable: URL, _ arguments: [String], timeout: TimeInterval) -> (status: Int32, output: String) {
@@ -147,6 +148,28 @@ enum MihomoCore {
 
     static func isPortFree(_ port: Int) -> Bool {
         boundPort(requested: UInt16(port)) != nil
+    }
+
+    /// 是否有进程正在监听该端口（用 netstat 而不是 lsof，后者看不到 root 进程的套接字）。
+    static func hasListener(_ port: Int) -> Bool {
+        let output = Command.run("/usr/sbin/netstat", ["-an", "-p", "tcp"]).output
+        return output.split(separator: "\n").contains { line in
+            let fields = line.split(whereSeparator: \.isWhitespace)
+            guard fields.count >= 6, fields[5] == "LISTEN" else { return false }
+            return fields[3].hasSuffix(".\(port)")
+        }
+    }
+
+    /// 等待端口可用。TUN 模式的内核以 root 运行，退出后它留下的 TIME_WAIT 连接（约 2×MSL = 30 秒）
+    /// 会让普通用户无法绑定同一端口（内核禁止跨 uid 复用）。只要没有进程在监听，就等它们过期，
+    /// 而不是误报"端口被其他程序占用"。
+    static func waitForPort(_ port: Int, timeout: TimeInterval = 40) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            if isPortFree(port) { return true }
+            if hasListener(port) || Date() >= deadline { return false }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
     }
 
     static func freePort() -> Int? {
@@ -293,5 +316,31 @@ enum MihomoCore {
 
     static func removeUpgraded() {
         try? FileManager.default.removeItem(at: userCore)
+    }
+}
+
+/// 监听 macOS 全局代理设置（`State:/Network/Global/Proxies`）的变化。
+/// 其他代理软件改写系统代理、切换网络或新增网络服务导致主服务变化时，都会触发回调。
+final class SystemProxyWatcher {
+    private var store: SCDynamicStore?
+    private let onChange: () -> Void
+
+    /// 回调在主线程执行。
+    init(onChange: @escaping () -> Void) {
+        self.onChange = onChange
+        var context = SCDynamicStoreContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(),
+                                            retain: nil, release: nil, copyDescription: nil)
+        guard let store = SCDynamicStoreCreate(nil, "Lockgate.SystemProxyWatcher" as CFString, { _, _, info in
+            guard let info else { return }
+            Unmanaged<SystemProxyWatcher>.fromOpaque(info).takeUnretainedValue().onChange()
+        }, &context) else { return }
+        let keys = [SCDynamicStoreKeyCreateProxies(nil)] as CFArray
+        guard SCDynamicStoreSetNotificationKeys(store, keys, nil),
+              SCDynamicStoreSetDispatchQueue(store, .main) else { return }
+        self.store = store
+    }
+
+    deinit {
+        if let store { SCDynamicStoreSetDispatchQueue(store, nil) }
     }
 }

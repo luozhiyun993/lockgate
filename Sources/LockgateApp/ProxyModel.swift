@@ -31,6 +31,8 @@ final class ProxyModel: ObservableObject {
     @Published private(set) var logs: [String] = []
     @Published var error: String?
     @Published private(set) var systemProxyApplied = false
+    /// 用户开着系统代理、内核也在运行，但系统代理被其他程序或网络变化改走了。
+    @Published private(set) var systemProxyLost = false
     @Published private(set) var tunAuthorized = false
     @Published private(set) var adding = false
     @Published private(set) var updating: Set<UUID> = []
@@ -50,11 +52,18 @@ final class ProxyModel: ObservableObject {
     @Published private(set) var overrideMessage: String?
     private var gateAddresses: [String]?
     private var gateSyncing = false
+    private var proxyWatcher: SystemProxyWatcher?
+    private var proxyQueue: Task<Void, Never>?
+    private var applyingSystemProxy = 0
+    private var proxyGuard = SystemProxyGuard()
 
     private let store = ProxyStore()
     private var process: Process?
     private var api: MihomoAPI?
     private var runtime: CoreRuntime?
+    /// 当前内核是否以特权（root）运行。授权过 TUN 后，即使不开 TUN 也用特权内核，
+    /// 这样开关 TUN 只需热重载配置，不必重启内核、也不会切换进程身份。
+    private var privileged = false
     private var generation = 0
     private var autoUpdateTask: Task<Void, Never>?
     private var watchTask: Task<Void, Never>?
@@ -76,6 +85,9 @@ final class ProxyModel: ObservableObject {
             save()
         }
         systemProxyApplied = MihomoCore.systemProxyPointsToCore(port: settings.mixedPort)
+        proxyWatcher = SystemProxyWatcher { [weak self] in
+            MainActor.assumeIsolated { self?.systemProxyChanged() }
+        }
         Task {
             await loadCoreInfo()
             // 内核随应用启动；系统代理和 TUN 按各自开关的状态接管。
@@ -139,7 +151,7 @@ final class ProxyModel: ObservableObject {
         guard running else { return "代理未运行" }
         var parts = ["代理运行中"]
         if settings.tun { parts.append(tunInterface.map { "TUN（\($0)）" } ?? "TUN") }
-        if systemProxyApplied { parts.append("系统代理") }
+        if systemProxyApplied { parts.append("系统代理") } else if systemProxyLost { parts.append("系统代理已被改走") }
         return parts.joined(separator: " · ")
     }
 
@@ -253,26 +265,32 @@ final class ProxyModel: ObservableObject {
         self.core = core
         let tun = settings.tun
         var executable = core.url
-        if tun {
-            if !(await Task.detached(operation: { MihomoCore.privilegedReady(matching: core) }).value) {
-                guard interactive else {
-                    throw CoreError("TUN 模式的内核需要重新授权。请在「代理」页重新打开 TUN 模式。")
-                }
-                try await Task.detached { try MihomoCore.installPrivileged(from: core) }.value
-                onEvent("已授权安装 TUN 模式内核（\(core.version)）。")
+        var usePrivileged = await Task.detached(operation: { MihomoCore.privilegedReady(matching: core) }).value
+        if tun, !usePrivileged {
+            guard interactive else {
+                throw CoreError("TUN 模式的内核需要重新授权。请在「代理」页重新打开 TUN 模式。")
             }
+            try await Task.detached { try MihomoCore.installPrivileged(from: core) }.value
+            onEvent("已授权安装 TUN 模式内核（\(core.version)）。")
+            usePrivileged = true
+        }
+        if usePrivileged {
             tunAuthorized = true
             executable = MihomoCore.privilegedCore
         }
         await Task.detached { MihomoCore.terminateOrphan() }.value
-        guard MihomoCore.isPortFree(settings.mixedPort) else {
+        let port = settings.mixedPort
+        if !MihomoCore.isPortFree(port), !(await Task.detached(operation: { MihomoCore.hasListener(port) }).value) {
+            onEvent("正在等待端口 \(port) 上的旧连接释放（关闭 TUN 后最多约 30 秒）…")
+        }
+        guard await MihomoCore.waitForPort(port) else {
             throw CoreError("代理端口 \(settings.mixedPort) 已被其他程序占用。请在「代理」页换一个端口，或退出占用它的代理软件。")
         }
         guard let controllerPort = MihomoCore.freePort() else { throw CoreError("无法分配内核控制端口。") }
         let runtime = CoreRuntime(mixedPort: settings.mixedPort, controllerPort: controllerPort,
                                   secret: UUID().uuidString + UUID().uuidString, mode: settings.mode, tun: tun,
                                   gate: gateAddresses, geo: settings.geo)
-        let home = MihomoCore.home(tun: tun)
+        let home = MihomoCore.home(privileged: usePrivileged)
         let config = try await writeConfig(subscription, runtime: runtime, home: home)
         try await validate(config, home: home, core: core)
 
@@ -314,6 +332,7 @@ final class ProxyModel: ObservableObject {
         }
         self.api = api
         self.runtime = runtime
+        privileged = usePrivileged
         running = true
         monitor.attach(api)
         tunInterface = nil
@@ -332,9 +351,11 @@ final class ProxyModel: ObservableObject {
         if restoreSystemProxy, systemProxyApplied || MihomoCore.systemProxyPointsToCore(port: settings.mixedPort) {
             do { try await applySystemProxy(false) } catch { self.error = error.localizedDescription }
         }
+        if restoreSystemProxy { systemProxyLost = false }
         generation += 1
         api = nil
         runtime = nil
+        privileged = false
         running = false
         tunInterface = nil
         monitor.attach(nil)
@@ -354,6 +375,7 @@ final class ProxyModel: ObservableObject {
         process = nil
         api = nil
         runtime = nil
+        privileged = false
         running = false
         tunInterface = nil
         monitor.attach(nil)
@@ -382,16 +404,82 @@ final class ProxyModel: ObservableObject {
 
     // MARK: 接管方式
 
+    /// 所有系统代理改写排队依次执行，避免快速连点时多组 networksetup 交错，最终状态与开关不一致。
     private func applySystemProxy(_ enabled: Bool) async throws {
+        let previous = proxyQueue
         let port = settings.mixedPort
-        try await Task.detached { try MihomoCore.setSystemProxy(port: enabled ? port : nil) }.value
-        systemProxyApplied = enabled
+        let job = Task { @MainActor () throws -> Void in
+            await previous?.value
+            applyingSystemProxy += 1
+            defer { applyingSystemProxy -= 1 }
+            try await Task.detached { try MihomoCore.setSystemProxy(port: enabled ? port : nil) }.value
+            systemProxyApplied = enabled
+            systemProxyLost = false
+        }
+        proxyQueue = Task { _ = try? await job.value }
+        try await job.value
+        // 改写过程中的通知被忽略了，结束后按最终状态核对一次。
+        if applyingSystemProxy == 0 { systemProxyChanged() }
+    }
+
+    /// 系统代理设置有变化（由 SystemProxyWatcher 通知）：按真实状态更新，发现被改走时提示或自动恢复。
+    private func systemProxyChanged() {
+        guard applyingSystemProxy == 0 else { return }
+        let pointsToCore = MihomoCore.systemProxyPointsToCore(port: settings.mixedPort)
+        if pointsToCore {
+            if !systemProxyApplied || systemProxyLost {
+                systemProxyApplied = true
+                systemProxyLost = false
+                if settings.systemProxy { onEvent("系统代理重新指向了 Lockgate。") }
+            }
+            return
+        }
+        guard systemProxyApplied else { return }
+        systemProxyApplied = false
+        // 只有用户希望系统代理开着、且内核在运行时，才算"被改走"；否则只是同步状态。
+        guard settings.systemProxy, running else { return }
+        systemProxyLost = true
+        guard settings.guardSystemProxy else {
+            onEvent("系统代理已被其他程序或网络变化改走，不再指向 Lockgate；流量不再经过内置代理。可在「代理」页重新接管。")
+            return
+        }
+        guard proxyGuard.allowRestore() else {
+            let message = "系统代理在 1 分钟内被反复改走，已暂停自动恢复。请检查是否有其他代理软件在同时设置系统代理，然后手动重新接管。"
+            error = message
+            onEvent(message)
+            return
+        }
+        onEvent("系统代理被改走，正在自动恢复为 Lockgate。")
+        Task {
+            do { try await applySystemProxy(true) } catch { self.error = "自动恢复系统代理失败：\(error.localizedDescription)" }
+        }
+    }
+
+    /// 系统代理被改走后，由用户手动重新接管。
+    func reclaimSystemProxy() {
+        guard !busy, running, settings.systemProxy else { return }
+        proxyGuard.reset()
+        Task {
+            do {
+                try await applySystemProxy(true)
+                onEvent("已重新将系统代理指向内置代理。")
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+
+    func setGuardSystemProxy(_ enabled: Bool) {
+        guard settings.guardSystemProxy != enabled else { return }
+        settings.guardSystemProxy = enabled
+        save()
+        proxyGuard.reset()
+        if enabled, systemProxyLost { reclaimSystemProxy() }
     }
 
     func setSystemProxy(_ enabled: Bool) {
         guard !busy, settings.systemProxy != enabled || systemProxyApplied != enabled else { return }
         settings.systemProxy = enabled
         save()
+        if !enabled { systemProxyLost = false }
         // 关闭时只处理确实指向 Lockgate 端口的系统代理，不清除其他代理软件设置的系统代理。
         guard enabled ? running : (systemProxyApplied || MihomoCore.systemProxyPointsToCore(port: settings.mixedPort)) else { return }
         Task {
@@ -410,6 +498,19 @@ final class ProxyModel: ObservableObject {
         Task {
             busy = true
             defer { busy = false }
+            // 特权内核已在运行：热重载配置即可开关 TUN，不必重启内核；重载后会断开现有连接，让它们按新的接管方式重连。
+            if privileged {
+                do {
+                    try await reloadConfig()
+                    tunInterface = nil
+                    tunInterfaceMissing = false
+                    if enabled, let api { resolveTunInterface(api, generation: generation) }
+                    onEvent(enabled ? "已开启 TUN 模式（热切换）。" : "已关闭 TUN 模式（热切换）。")
+                    return
+                } catch {
+                    onEvent("热切换 TUN 失败，改为重启内核：\(error.localizedDescription)")
+                }
+            }
             do {
                 try await restart(interactive: true)
                 onEvent(enabled ? "已切换到 TUN 模式。" : "已关闭 TUN 模式。")
@@ -679,8 +780,9 @@ final class ProxyModel: ObservableObject {
     /// 不重启内核，直接让它重新读取配置；用于订阅更新和切换订阅。
     private func reloadConfig() async throws {
         guard let api, let runtime, let core, let subscription = settings.active else { return }
-        let home = MihomoCore.home(tun: runtime.tun)
+        let home = MihomoCore.home(privileged: privileged)
         var current = runtime
+        current.tun = privileged && settings.tun
         current.mode = settings.mode
         current.gate = gateAddresses
         current.geo = settings.geo
@@ -696,16 +798,16 @@ final class ProxyModel: ObservableObject {
     private func resolveTunInterface(_ api: MihomoAPI, generation current: Int) {
         Task {
             for _ in 0..<20 {
-                guard current == generation, running else { return }
+                guard current == generation, running, runtime?.tun == true else { return }
                 if let name = await api.tunDevice() {
-                    guard current == generation, running else { return }
+                    guard current == generation, running, runtime?.tun == true else { return }
                     tunInterface = name
                     onEvent("TUN 网卡：\(name)。")
                     return
                 }
                 try? await Task.sleep(nanoseconds: 500_000_000)
             }
-            if current == generation, running { tunInterfaceMissing = true }
+            if current == generation, running, runtime?.tun == true { tunInterfaceMissing = true }
         }
     }
 
@@ -716,7 +818,7 @@ final class ProxyModel: ObservableObject {
 
     // MARK: 地理数据
 
-    private var geoHome: URL { MihomoCore.home(tun: runtime?.tun ?? settings.tun) }
+    private var geoHome: URL { MihomoCore.home(privileged: running ? privileged : tunAuthorized) }
 
     func refreshGeoFiles() {
         let home = geoHome
@@ -789,15 +891,15 @@ final class ProxyModel: ObservableObject {
     func finalConfig() async throws -> (text: String, live: Bool) {
         let raw: String
         let live: Bool
-        if running, let runtime {
-            raw = try String(contentsOf: MihomoCore.home(tun: runtime.tun).appendingPathComponent("config.yaml"), encoding: .utf8)
+        if running, runtime != nil {
+            raw = try String(contentsOf: MihomoCore.home(privileged: privileged).appendingPathComponent("config.yaml"), encoding: .utf8)
             live = true
         } else {
             guard let subscription = settings.active,
                   FileManager.default.fileExists(atPath: store.profileURL(subscription.id).path) else {
                 throw CoreError("还没有可用的订阅，无法生成配置。")
             }
-            let home = MihomoCore.home(tun: settings.tun)
+            let home = MihomoCore.home(privileged: tunAuthorized)
             let preview = CoreRuntime(mixedPort: settings.mixedPort, controllerPort: 9, secret: "preview",
                                       mode: settings.mode, tun: settings.tun, gate: gateAddresses, geo: settings.geo)
             let file = try await writeConfig(subscription, runtime: preview, home: home, fileName: "preview.yaml")
@@ -883,7 +985,7 @@ final class ProxyModel: ObservableObject {
                     onEvent("覆写已更新并应用。")
                 } else if let subscription = settings.active, let core,
                           FileManager.default.fileExists(atPath: store.profileURL(subscription.id).path) {
-                    let home = MihomoCore.home(tun: false)
+                    let home = MihomoCore.home(privileged: false)
                     let runtime = CoreRuntime(mixedPort: settings.mixedPort, controllerPort: 9, secret: "check",
                                               mode: settings.mode, tun: false, gate: gateAddresses)
                     let config = try await writeConfig(subscription, runtime: runtime, home: home, fileName: "check.yaml")
@@ -923,7 +1025,9 @@ final class ProxyModel: ObservableObject {
             return
         }
         guard settings.tun || systemProxyApplied else {
-            gateStatus = .unavailable("内置代理没有接管流量：系统代理和 TUN 模式都未开启。")
+            gateStatus = .unavailable(systemProxyLost
+                ? "系统代理已被其他程序改走，内置代理没有接管流量。"
+                : "内置代理没有接管流量：系统代理和 TUN 模式都未开启。")
             return
         }
         let target = blocked ? ProfileComposer.gateBlock : ProfileComposer.gateAllow
@@ -1035,6 +1139,11 @@ final class ProxyModel: ObservableObject {
                 try await Task.detached { try MihomoCore.removePrivileged() }.value
                 tunAuthorized = false
                 onEvent("已移除 TUN 模式的特权内核。")
+                // 正在运行的仍是已删除的特权内核，换回普通内核。
+                guard running, privileged, !busy else { return }
+                busy = true
+                defer { busy = false }
+                do { try await restart(interactive: false) } catch { self.error = error.localizedDescription }
             } catch { self.error = error.localizedDescription }
         }
     }

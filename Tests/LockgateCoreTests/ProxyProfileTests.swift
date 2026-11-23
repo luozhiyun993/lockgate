@@ -320,4 +320,28 @@ final class ProxyProfileTests: XCTestCase {
         XCTAssertTrue(ProxySettings().coreFollowsApp)
         XCTAssertFalse(ProxySettings().systemProxy)
     }
+
+    func testGuardSystemProxySettingDefaultsOffAndRoundTrips() throws {
+        let legacy = try JSONDecoder().decode(ProxySettings.self, from: Data(#"{"systemProxy":true}"#.utf8))
+        XCTAssertFalse(legacy.guardSystemProxy)
+        var settings = ProxySettings()
+        XCTAssertFalse(settings.guardSystemProxy)
+        settings.guardSystemProxy = true
+        let decoded = try JSONDecoder().decode(ProxySettings.self, from: JSONEncoder().encode(settings))
+        XCTAssertTrue(decoded.guardSystemProxy)
+    }
+
+    func testSystemProxyGuardStopsFightingWithinWindow() {
+        var guard_ = SystemProxyGuard(limit: 3, window: 60)
+        let start = Date(timeIntervalSince1970: 1_000)
+        XCTAssertTrue(guard_.allowRestore(at: start))
+        XCTAssertTrue(guard_.allowRestore(at: start.addingTimeInterval(10)))
+        XCTAssertTrue(guard_.allowRestore(at: start.addingTimeInterval(20)))
+        // 一分钟内第四次被改走：停止自动恢复。
+        XCTAssertFalse(guard_.allowRestore(at: start.addingTimeInterval(30)))
+        // 最早的一次滑出窗口后又可以恢复。
+        XCTAssertTrue(guard_.allowRestore(at: start.addingTimeInterval(61)))
+        guard_.reset()
+        XCTAssertTrue(guard_.allowRestore(at: start.addingTimeInterval(62)))
+    }
 }

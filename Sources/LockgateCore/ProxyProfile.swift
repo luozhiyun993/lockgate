@@ -235,6 +235,8 @@ public struct ProxySettings: Codable, Equatable {
     public var watchLocalFiles = true
     /// 内核改为随应用启动之后置为 true；旧设置文件里没有这一项，用来做一次性迁移。
     public var coreFollowsApp = true
+    /// 系统代理被其他程序改走后自动改回 Lockgate。默认关闭，只提示，避免与其他代理软件来回抢。
+    public var guardSystemProxy = false
 
     public init() {}
 
@@ -250,7 +252,7 @@ public struct ProxySettings: Codable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case coreEnabled, systemProxy, tun, mode, mixedPort, autoUpdateHours, activeSubscription, subscriptions, selections, overrides, geo, watchLocalFiles, coreFollowsApp
+        case coreEnabled, systemProxy, tun, mode, mixedPort, autoUpdateHours, activeSubscription, subscriptions, selections, overrides, geo, watchLocalFiles, coreFollowsApp, guardSystemProxy
     }
 
     public init(from decoder: Decoder) throws {
@@ -268,6 +270,7 @@ public struct ProxySettings: Codable, Equatable {
         geo = try values.decodeIfPresent(GeoSettings.self, forKey: .geo) ?? GeoSettings()
         watchLocalFiles = try values.decodeIfPresent(Bool.self, forKey: .watchLocalFiles) ?? true
         coreFollowsApp = try values.decodeIfPresent(Bool.self, forKey: .coreFollowsApp) ?? false
+        guardSystemProxy = try values.decodeIfPresent(Bool.self, forKey: .guardSystemProxy) ?? false
     }
 
     public var active: Subscription? {
@@ -674,6 +677,29 @@ public enum ProfileComposer {
 }
 
 // MARK: - 系统代理
+
+/// 系统代理被改走后自动恢复的节流：一段时间内恢复次数过多，说明有其他程序在持续改写，
+/// 此时停止自动恢复，避免两边无休止地来回覆盖。
+public struct SystemProxyGuard {
+    public let limit: Int
+    public let window: TimeInterval
+    private var restores: [Date] = []
+
+    public init(limit: Int = 3, window: TimeInterval = 60) {
+        self.limit = limit
+        self.window = window
+    }
+
+    /// 返回 true 表示可以再自动恢复一次，并记下这次恢复。
+    public mutating func allowRestore(at now: Date = Date()) -> Bool {
+        restores.removeAll { now.timeIntervalSince($0) >= window }
+        guard restores.count < limit else { return false }
+        restores.append(now)
+        return true
+    }
+
+    public mutating func reset() { restores = [] }
+}
 
 public enum SystemProxyPlan {
     public static let host = "127.0.0.1"
