@@ -16,6 +16,7 @@ A native macOS desktop app that checks the proxy environment used by Claude with
 - Confirmed faults terminate selected processes and lock protection until manual recovery.
 - Network timeouts leave existing Claude processes running while blocking new managed launches.
 - Isolated fault simulations, an explicitly confirmed real emergency-stop test, a read-only diagnostic tool, and local event history.
+- Token usage panel: token consumption and estimated cost recorded on this Mac, broken down by agent (Claude Code / Codex), Claude Code subagent, model, project, and day.
 
 The current interface is in Simplified Chinese. This English README documents the same behavior.
 
@@ -51,6 +52,16 @@ The app starts in **observation mode**: it checks the environment without termin
 Overview also provides **Emergency-stop all Claude (一键急停全部 Claude)**. After confirmation, it terminates all verified Claude Desktop / Code processes owned by the current user, regardless of the selected protection toggles. It never kills an unresolved process by name alone; save your work first.
 
 Closing the window leaves the menu bar app running. Quitting stops monitoring and process enforcement. Reopening returns to observation mode while retaining any existing lockout. This version does not install a system daemon or enable launch at login.
+
+## Token usage
+
+The "Token 用量" page parses local session logs read-only (`~/.claude/projects`, `~/.codex/sessions`). Usage counting makes no network requests, does not read conversation content, and is independent of the protection state. Switch between estimated cost and token views and filter by today / 7 days / 30 days / all; the page has a trend chart, a five-week calendar heatmap, and breakdowns by model / directory / subagent / day; while the page is open it re-reads appended log lines about every 30 seconds, and can be refreshed manually; it never calls any vendor API.
+
+- Input, output, cache-read, and cache-write tokens do not overlap; Codex logs report cached tokens inside input, so they are split apart.
+- A request that appears more than once in the logs, or is copied into a resumed session, is counted once.
+- Only usage whose logs are still on disk is visible: once an agent prunes old logs (Claude Code keeps about 30 days by default) those records disappear. Claude Desktop does not record usage locally.
+- Cost is an estimate at public standard API rates (built-in price table; its check date is shown at the bottom of the page). It distinguishes Claude 5-minute / 1-hour cache writes and fast mode, and ignores long-context surcharges; subscription plans and third-party relays bill differently. Models without a known price are excluded from cost and marked "+"; click "更新价格表" at the bottom of the page to update prices: only on click, it downloads the public price file maintained by the LiteLLM project from GitHub, with no credentials, and stores it as `model-prices-remote.json` in the same directory (delete that file to return to built-in prices). You can also add or override prices by hand, with highest priority, in `~/Library/Application Support/Lockgate/model-prices.json` as `{"model-id": {"input": 2, "output": 10, "cacheRead": 0.1}}` (USD per million tokens).
+- `swift run lockgate-diagnostics --usage` prints the same summary in a terminal.
 
 ## Protection rules
 

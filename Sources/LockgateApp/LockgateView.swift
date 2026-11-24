@@ -6,6 +6,7 @@ private enum Page: String, CaseIterable {
     case overview = "保护概览"
     case settings = "出口与规则"
     case tests = "保护测试"
+    case usage = "Token 用量"
     case activity = "事件记录"
 
     var icon: String {
@@ -13,6 +14,7 @@ private enum Page: String, CaseIterable {
         case .overview: return "square.grid.2x2"
         case .settings: return "slider.horizontal.3"
         case .tests: return "checkmark.shield"
+        case .usage: return "chart.bar"
         case .activity: return "clock.arrow.circlepath"
         }
     }
@@ -20,6 +22,7 @@ private enum Page: String, CaseIterable {
 
 struct LockgateView: View {
     @ObservedObject var model: LockgateModel
+    @StateObject private var usage = TokenUsageModel()
     @State private var page: Page = .overview
     @State private var draft: LockgateSettings
     @State private var confirmEnable = false
@@ -75,6 +78,7 @@ struct LockgateView: View {
                         case .overview: overview
                         case .settings: settings
                         case .tests: tests
+                        case .usage: TokenUsageView(model: usage)
                         case .activity: activity
                         }
                     }.padding(28)
@@ -121,6 +125,7 @@ struct LockgateView: View {
         case .overview: return "为 Claude 的每次启动与持续运行检查代理环境。"
         case .settings: return "参考地区检查规则，可额外固定一个出口 IP。"
         case .tests: return "先安全演练，再按需验证真实急停。"
+        case .usage: return "按 agent、模型与项目查看本机记录的 token 消耗。"
         case .activity: return "查看检测变化、锁定原因与恢复操作。"
         }
     }
@@ -356,7 +361,17 @@ struct LockgateView: View {
         }
     }
 
-    private func card<Content: View>(_ title: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
+    private func card<Content: View>(_ title: String, icon: String, @ViewBuilder content: @escaping () -> Content) -> some View {
+        LockgateCard(title: title, icon: icon, content: content)
+    }
+}
+
+struct LockgateCard<Content: View>: View {
+    let title: String
+    let icon: String
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 15) {
             Label(title, systemImage: icon).font(.system(size: 13, weight: .semibold))
             content()

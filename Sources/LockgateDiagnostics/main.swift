@@ -34,4 +34,13 @@ if CommandLine.arguments.contains("--network") {
 } else {
     print("未发送网络探测；使用 --network 启用 Cloudflare 出口查询。")
 }
+if CommandLine.arguments.contains("--usage") {
+    let started = Date()
+    let summary = await TokenUsageScanner().refresh().summary(prices: PriceTable(directory: StateStore.defaultDirectory))
+    print("Token 用量：共 \(summary.total.total)（输入 \(summary.total.input) · 输出 \(summary.total.output) · 缓存读取 \(summary.total.cacheRead) · 缓存写入 \(summary.total.cacheWrite)），\(summary.sessions) 个会话，扫描 \(String(format: "%.1f", Date().timeIntervalSince(started))) 秒")
+    print("  估算费用：$\(String(format: "%.2f", summary.cost))（按公开 API 标准价，价格表 \(PriceTable.builtInDate)）\(summary.unpriced > 0 ? "，另有 \(summary.unpriced) token 价格未知未计入" : "")")
+    for row in summary.agents { print("  \(row.name)：\(row.counts.total)，\(row.sessions) 个会话，$\(String(format: "%.2f", row.cost))") }
+    for row in summary.models { print("  模型 \(row.name)：\(row.counts.total)，\(row.unpriced > 0 ? "价格未知" : "$" + String(format: "%.2f", row.cost))") }
+    for row in summary.subagents { print("  Claude Code \(row.name.isEmpty ? "主会话" : "子代理 \(row.name)")：\(row.counts.total)") }
+}
 print("诊断结束：未启动或终止任何 Claude 进程，未更改保护状态。")
