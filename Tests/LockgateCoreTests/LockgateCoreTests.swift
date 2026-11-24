@@ -234,15 +234,31 @@ final class InspectionTests: XCTestCase {
         XCTAssertNil(LocalInspector.routeInterface(from: "route: not in table"))
     }
 
-    func testProcessParserPreservesSpacesAndStartIdentity() {
-        let result = ProcessIdentity.parse("  421 501 Sat Nov  7 21:00:00 2026     /Applications/Example App.app/Contents/MacOS/Example")
-        XCTAssertEqual(result?.pid, 421)
-        XCTAssertEqual(result?.started, "Sat Nov 7 21:00:00 2026")
-        XCTAssertEqual(result?.executable, "/Applications/Example App.app/Contents/MacOS/Example")
+    func testProcessSnapshotDoesNotDependOnLocaleOrTimeZone() throws {
+        // 曾经解析 ps 的 lstart 文本：zh_TW 等区域设置下字段数不同，所有进程行解析失败、识别数恒为 0。
+        let saved = ["LANG", "LC_ALL", "TZ"].map { ($0, ProcessInfo.processInfo.environment[$0]) }
+        defer {
+            for (key, value) in saved { if let value { setenv(key, value, 1) } else { unsetenv(key) } }
+            tzset()
+        }
+        func parent() throws -> ProcessIdentity {
+            try XCTUnwrap(ProcessInspector.snapshot()?.first { $0.pid == getppid() })
+        }
+        setenv("LANG", "zh_TW.UTF-8", 1); setenv("LC_ALL", "zh_TW.UTF-8", 1); setenv("TZ", "Asia/Taipei", 1); tzset()
+        let first = try parent()
+        setenv("LANG", "ar_SA.UTF-8", 1); setenv("LC_ALL", "ar_SA.UTF-8", 1); setenv("TZ", "America/Los_Angeles", 1); tzset()
+        XCTAssertEqual(try parent(), first)
+        XCTAssertNotNil(first.started.range(of: #"^[0-9]+\.[0-9]{6}$"#, options: .regularExpression))
+    }
+
+    func testStartIdentityKeepsMicrosecondPrecision() {
+        XCTAssertEqual(ProcessInspector.startIdentity(seconds: 1_795_000_000, microseconds: 42), "1795000000.000042")
+        XCTAssertNotEqual(ProcessInspector.startIdentity(seconds: 1, microseconds: 10),
+                          ProcessInspector.startIdentity(seconds: 1, microseconds: 100))
     }
 
     func testNativeCLIWithShortProcessTitleUsesKernelPath() throws {
-        let raw = try XCTUnwrap(ProcessIdentity.parse("94272 501 Sat Nov 7 23:22:56 2026 claude"))
+        let raw = ProcessIdentity(pid: 94272, uid: 501, started: "1.000000", executable: "claude", executableVerified: false)
         let installed = "/Users/example/.local/share/claude/versions/2.1.319"
         XCTAssertFalse(raw.executableVerified)
         let resolved = raw.resolvingExecutable(installed)
@@ -256,14 +272,14 @@ final class InspectionTests: XCTestCase {
 
     func testMisleadingProcessTitleCannotAuthorizeTermination() throws {
         let installed = "/Users/example/.local/share/claude/versions/2.1.319"
-        let raw = try XCTUnwrap(ProcessIdentity.parse("94272 501 Sat Nov 7 23:22:56 2026 \(installed)"))
+        let raw = ProcessIdentity(pid: 94272, uid: 501, started: "1.000000", executable: installed, executableVerified: false)
         XCTAssertFalse(ProcessInspector.isProtected(raw, settings: LockgateSettings(), uid: 501, cliExecutable: installed))
         let resolved = raw.resolvingExecutable("/bin/sleep")
         XCTAssertFalse(ProcessInspector.isProtected(resolved, settings: LockgateSettings(), uid: 501, cliExecutable: installed))
     }
 
     func testUnresolvedCandidateIsUnknownInsteadOfZeroTargets() throws {
-        let raw = try XCTUnwrap(ProcessIdentity.parse("94272 501 Sat Nov 7 23:22:56 2026 claude"))
+        let raw = ProcessIdentity(pid: 94272, uid: 501, started: "1.000000", executable: "claude", executableVerified: false)
         XCTAssertTrue(ProcessInspector.hasUnresolvedCandidate(raw.resolvingExecutable(nil), settings: LockgateSettings(), uid: 501))
         XCTAssertTrue(ProcessInspector.hasUnresolvedCandidate(raw.resolvingExecutable("claude"), settings: LockgateSettings(), uid: 501))
         XCTAssertFalse(ProcessInspector.hasUnresolvedCandidate(raw, settings: LockgateSettings(), uid: 502))
@@ -273,7 +289,7 @@ final class InspectionTests: XCTestCase {
     func testDesktopMainAndHelperPathsRemainRecognized() throws {
         for path in ["/Applications/Claude.app/Contents/MacOS/Claude",
                      "/Applications/Claude.app/Contents/Frameworks/Claude Helper.app/Contents/MacOS/Claude Helper"] {
-            let raw = try XCTUnwrap(ProcessIdentity.parse("94272 501 Sat Nov 7 23:22:56 2026 Claude"))
+            let raw = ProcessIdentity(pid: 94272, uid: 501, started: "1.000000", executable: "Claude", executableVerified: false)
             XCTAssertTrue(ProcessInspector.isProtected(raw.resolvingExecutable(path), settings: LockgateSettings(), uid: 501,
                 installations: ClaudeInstallations(desktopApplications: [URL(fileURLWithPath: "/Applications/Claude.app")])) )
         }
@@ -301,7 +317,7 @@ final class InspectionTests: XCTestCase {
 
     func testRenamedNodeProcessStillRequiresClaudeEntrypoint() throws {
         let path = "/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js"
-        let raw = try XCTUnwrap(ProcessIdentity.parse("94272 501 Sat Nov 7 23:22:56 2026 claude"))
+        let raw = ProcessIdentity(pid: 94272, uid: 501, started: "1.000000", executable: "claude", executableVerified: false)
         let identity = raw.resolvingExecutable("/opt/homebrew/bin/node")
         XCTAssertTrue(ProcessInspector.isProtected(identity, settings: LockgateSettings(), uid: 501, cliExecutable: path, arguments: ["node", path]))
         XCTAssertFalse(ProcessInspector.isProtected(identity, settings: LockgateSettings(), uid: 501, cliExecutable: path, arguments: ["node", "/tmp/other.js"]))

@@ -14,6 +14,10 @@ public enum Command {
         process.arguments = arguments
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
+        // 输出要按固定格式解析：强制 C 区域设置，避免命令输出随系统语言或地区改变格式。
+        var environment = ProcessInfo.processInfo.environment
+        environment["LC_ALL"] = "C"
+        process.environment = environment
         do {
             try process.run()
             let watchdog = DispatchWorkItem { if process.isRunning { process.terminate() } }
@@ -31,6 +35,8 @@ public enum Command {
 public struct ProcessIdentity: Equatable {
     public let pid: Int32
     public let uid: UInt32
+    /// 进程启动时刻的不透明标识，只用于判断「还是不是同一个进程」。
+    /// 取自内核记录的启动时间（Unix 秒.微秒），与系统语言、地区和时区无关。
     public let started: String
     public let executable: String
     public let executableVerified: Bool
@@ -46,13 +52,6 @@ public struct ProcessIdentity: Equatable {
     func resolvingExecutable(_ path: String?) -> ProcessIdentity {
         guard let path, path.hasPrefix("/") else { return self }
         return ProcessIdentity(pid: pid, uid: uid, started: started, executable: path)
-    }
-
-    public static func parse(_ line: String) -> ProcessIdentity? {
-        let fields = line.split(maxSplits: 7, omittingEmptySubsequences: true, whereSeparator: { $0.isWhitespace })
-        guard fields.count == 8, let pid = Int32(fields[0]), let uid = UInt32(fields[1]), pid > 1 else { return nil }
-        return ProcessIdentity(pid: pid, uid: uid, started: fields[2...6].joined(separator: " "),
-                               executable: String(fields[7]).trimmingCharacters(in: .whitespaces), executableVerified: false)
     }
 }
 
@@ -72,14 +71,38 @@ public struct ProcessInspection {
 }
 
 public enum ProcessInspector {
+    /// 直接向内核查询进程列表，不解析 `ps` 的文本输出：`ps` 的启动时间格式随系统语言和地区变化，
+    /// 时区改变时同一进程的显示也会变。读不到信息的进程（其他用户的进程、刚退出的进程）直接跳过。
     public static func snapshot() -> [ProcessIdentity]? {
-        let result = Command.run("/bin/ps", ["-axo", "pid=,uid=,lstart=,comm="])
-        guard result.status == 0 else { return nil }
-        return result.output.split(separator: "\n").compactMap { line in
-            guard let identity = ProcessIdentity.parse(String(line)) else { return nil }
-            guard identity.uid == getuid(), identity.pid != getpid() else { return identity }
-            return identity.resolvingExecutable(executablePath(pid: identity.pid))
+        let capacity = proc_listallpids(nil, 0)
+        guard capacity > 0 else { return nil }
+        var pids = [pid_t](repeating: 0, count: Int(capacity) + 64)
+        let count = pids.withUnsafeMutableBytes { proc_listallpids($0.baseAddress, Int32($0.count)) }
+        guard count > 0 else { return nil }
+        return pids.prefix(Int(count)).compactMap { pid in
+            guard pid > 1 else { return nil }
+            return identity(pid: pid)
         }
+    }
+
+    static func identity(pid: Int32) -> ProcessIdentity? {
+        var info = proc_bsdinfo()
+        let size = MemoryLayout<proc_bsdinfo>.size
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(size)) == size else { return nil }
+        let started = startIdentity(seconds: info.pbi_start_tvsec, microseconds: info.pbi_start_tvusec)
+        if pid != getpid(), info.pbi_uid == getuid(), let path = executablePath(pid: pid) {
+            return ProcessIdentity(pid: pid, uid: info.pbi_uid, started: started, executable: path)
+        }
+        // 取不到可执行路径时只留下进程名，标记为未核实：可以提示，但不能据此终止。
+        let longName = withUnsafeBytes(of: info.pbi_name) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
+        let shortName = withUnsafeBytes(of: info.pbi_comm) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
+        let name = longName.isEmpty ? shortName : longName
+        guard !name.isEmpty else { return nil }
+        return ProcessIdentity(pid: pid, uid: info.pbi_uid, started: started, executable: name, executableVerified: false)
+    }
+
+    static func startIdentity(seconds: UInt64, microseconds: UInt64) -> String {
+        "\(seconds).\(String(microseconds).leftPadded(to: 6))"
     }
 
     public static func executablePath(pid: Int32) -> String? {
@@ -320,5 +343,11 @@ public enum ExitInspector {
         } catch {
             return .unknown("网络不通或出口检测超时；继续检测，不急停。")
         }
+    }
+}
+
+private extension String {
+    func leftPadded(to length: Int) -> String {
+        count >= length ? self : String(repeating: "0", count: length - count) + self
     }
 }
