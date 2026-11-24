@@ -1,49 +1,10 @@
 # Lockgate
 
-## Built-in proxy
-
-Lockgate bundles the mihomo core. Add a subscription on the **订阅** page, then start the proxy, pick nodes and choose how traffic is captured on the **代理** page.
-
-- **Subscriptions**: full Clash / mihomo profiles keep their own proxy groups and rules; node-list subscriptions (share links, usually base64) get generated groups and a rule set that proxies everything except loopback and private ranges. Manual and scheduled updates; the active profile is hot-reloaded. Local files can be imported as well: the content is copied, never auto-updated, and re-read from the original file on request.
-- **Overrides**: the **覆写** page holds YAML and script overrides, applied in list order to whichever subscription is active and kept across subscription updates. YAML overrides merge with the profile using the same rules as Clash Party (maps merge recursively, other values replace; `+rules` prepends, `rules+` appends, `dns!` replaces without merging). Script overrides define `function main(config) { return config }` and run in an isolated JavaScriptCore subprocess with no file or network access, no async support and a 15-second limit. Overrides may change DNS, TUN details, rules, groups and proxies; ports, the controller, LAN access, proxy mode and the TUN switch stay enforced by Lockgate, and blocking rules are added after overrides. Results are validated by the core on save; on failure the core keeps its previous configuration.
-- **Managed settings**: listening ports, LAN access, the controller, TUN and DNS are always set by Lockgate regardless of the subscription. The mixed port (default 17890) and the controller listen on 127.0.0.1 only; the controller uses a random port and secret on every start. DNS defaults to Lockgate's fake-ip configuration and can be changed with an override.
-- **System proxy**: points HTTP / HTTPS / SOCKS of every enabled network service at the built-in proxy and bypasses only loopback and private ranges. It is turned off again when the proxy stops or the app quits. Lockgate watches the system proxy settings: when another proxy app or a network change moves them away, the proxy page shows a notice with a "reclaim" button; with "restore automatically" ticked it puts them back itself, pausing after more than 3 takeovers within a minute so two apps do not keep overwriting each other. The option is off by default.
-- **Local files auto-reload**: an imported local config is re-imported and hot-reloaded within a few seconds of the source file being saved (toggle under 订阅 → 自动更新). If the new content fails core validation, the previous config stays in use and the reason is shown on that entry.
-- **Core follows the app**: when Lockgate opens and a subscription exists, the mihomo core starts and listens on the mixed port (default `127.0.0.1:17890`); only programs that connect to that port use it. System proxy and TUN are two independent switches, both off by default, applied at core start when on. **停止代理** lasts for the current run only. When upgrading from an older version with the proxy stopped, both switches are turned off once so that the first launch does not suddenly take over traffic.
-- **Viewing configs**: each subscription has a **查看** button showing the content saved on disk; **查看最终配置** (subscription and override pages) shows the full config after overrides and Lockgate's managed settings are merged — the one the core actually loaded while running, a preview otherwise. The controller secret is hidden.
-- **External resources (geo data)**: the proxy page sets the download URLs for the GeoIP / GeoSite / MMDB / ASN databases, the data mode used by GEOIP rules (db / dat), auto-update and its interval, plus an **立即更新** button while the proxy is running. These are written into the core config (`geox-url`, `geodata-mode`, `geo-auto-update`, `geo-update-interval`), replacing the subscription's values; YAML overrides can still change them. `geoip.metadb` and `GeoSite.dat` are bundled; the core only loads and updates databases that the active rules reference. Auto-update is off by default.
-- **TUN mode**: captures all system traffic. The first activation asks for an administrator password once and installs the core at `/Library/Application Support/Lockgate/core/mihomo` as a root-owned setuid binary executable only by the admin group. Once authorised, the core runs from this root-owned binary even while TUN is off, so toggling TUN is a config hot-reload rather than a core restart; removing the authorisation switches back to the unprivileged core. Core upgrades require re-authorisation; the authorisation can be removed from the app. Once running, the proxy page and sidebar status show the interface the core created (e.g. `utun5`).
-- **Live monitor**: the **实时监控** page refreshes every second with total up / down rates and a one-minute chart, a per-outbound summary of open connections (which node, direct, or rejected), and a connection list showing destination, source process, matched rule, outbound chain and rate, with filtering, search and disconnect. Only traffic passing through the built-in proxy is counted, nothing is written to disk, and process names are best-effort. The list has two tabs: **实时连接** (open connections, sortable by clicking a column header: down / up rate, bytes transferred, start time) and **连接日志** (ended connections with totals, duration and end time, up to 1000 entries). Sampling runs once a second while the core is running; logged totals are the last sample before the connection disappeared, and sub-second connections may be missed.
-- **Core upgrades**: downloaded from the official mihomo GitHub release for the local architecture, SHA256-verified and test-run before replacing the previous core. The bundled version can be restored at any time.
-- **Interaction with the guard**: while protection is enabled, starting or stopping the proxy, toggling system proxy / TUN or changing the port is a network-path change and trips the lock. If the core exits unexpectedly the system proxy keeps pointing at its port, so traffic fails closed instead of going direct.
-
-The setuid core means members of the local admin group can run mihomo as root without a password; this is the trade-off for password-free TUN without a Developer ID. Core lifecycle, subscriptions, node selection, hot reload and port changes are verified; **system proxy and TUN capture have not yet been accepted on a real machine**. Bundled third-party components and licences are listed in [packaging/THIRD-PARTY.md](packaging/THIRD-PARTY.md).
-
-## Network blocking
-
-**出口与规则 → 网络阻断** blocks through the built-in proxy. The earlier system-extension mechanism has been removed from the interface; its source remains in the repository and is described at the end of this section.
-
-### Blocking through the built-in proxy
-
-Works in ordinary builds with no system extension or signing. Lockgate prepends a reject / pass switch group and matching address rules to the mihomo configuration. While protection is enabled, connections to the listed addresses are rejected by the core whenever the guard is locked or has not yet passed its checks, and existing connections are dropped; they are passed on to the subscription's own rules only after the checks pass and the lock is released manually. Pausing protection stops the blocking. The switch defaults to reject, so a core start, restart or reload stays closed until Lockgate confirms again, and managed launches require the core to confirm the pass state. The proxy is fixed to rule mode while this is enabled.
-
-Limits: matching is by address for every application using the built-in proxy, not per process. Only traffic that passes through the built-in proxy is covered (it must be running with system proxy or TUN enabled), nothing is enforced after Lockgate or the core exits (in TUN mode traffic then goes direct), and applications that resolve names themselves and connect by IP are not matched by domain rules.
-
-### System-extension mechanism (removed from the interface)
-
-The settings page no longer offers this switch, and saving settings turns it off. The design notes below are kept for reference.
-
-Settings now includes an opt-in network-blocking switch, default Claude addresses, custom domain / wildcard / IP rules, and a separate option to cover other applications accessing those addresses. The switch alone does not mean filtering is active: managed launches require a fresh acknowledgement from the system extension. Ordinary ad-hoc builds show that filtering is unavailable.
-
-The signed extension is designed to block selected Claude processes' outbound flows, including local proxy connections, after a confirmed unsafe proxy or exit. Recovery remains manual. Probe timeouts retain a previously approved connection state. Closing the window retains protection; normal pause or quit disables filtering first. Losing the host heartbeat for approximately eight seconds blocks identified protected flows. Close existing Claude sessions before first activation.
-
-Source compilation and policy tests are verified; **signed system-extension interception has not been validated on a real system**. Unknown process identities, unavailable hostnames, pre-existing connections and proxy forwarding limit coverage. See [network filter setup and acceptance tests](docs/network-filter.md) for signing prerequisites and limitations.
-
 [简体中文](README.md) · [English](README.en.md)
 
 <img src="assets/icon.png" width="128" alt="Lockgate friendly padlock icon">
 
-A native macOS desktop app that checks the proxy environment used by Claude without depending on a particular proxy client. It provides launch checks, continuous monitoring, process termination on confirmed faults, persistent lockout, and manual recovery.
+A native macOS desktop app that checks the proxy environment used by Claude without depending on a particular proxy client. It provides launch checks, continuous monitoring, process termination on confirmed faults, persistent lockout, and manual recovery. Lockgate only inspects the proxy environment: it does not provide a proxy and never changes the system proxy settings.
 
 ## Features
 
@@ -57,6 +18,20 @@ A native macOS desktop app that checks the proxy environment used by Claude with
 - Isolated fault simulations, an explicitly confirmed real emergency-stop test, a read-only diagnostic tool, and local event history.
 
 The current interface is in Simplified Chinese. This English README documents the same behavior.
+
+## Network blocking
+
+The current interface has no network-blocking switch; ordinary builds provide process-level termination only. Blocking through the built-in proxy (0.4.x) was removed together with the built-in proxy. The source of the system-extension mechanism remains in the repository.
+
+### System-extension mechanism (not offered in the interface)
+
+The settings page does not offer this switch, and saving settings turns it off. The design notes below are kept for reference.
+
+The design is an opt-in network-blocking switch with default Claude addresses, custom domain / wildcard / IP rules, and a separate option to cover other applications accessing those addresses. The switch alone does not mean filtering is active: managed launches require a fresh acknowledgement from the system extension. Ordinary ad-hoc builds show that filtering is unavailable.
+
+The signed extension is designed to block selected Claude processes' outbound flows, including local proxy connections, after a confirmed unsafe proxy or exit. Recovery remains manual. Probe timeouts retain a previously approved connection state. Closing the window retains protection; normal pause or quit disables filtering first. Losing the host heartbeat for approximately eight seconds blocks identified protected flows. Close existing Claude sessions before first activation.
+
+Source compilation and policy tests are verified; **signed system-extension interception has not been validated on a real system**. Unknown process identities, unavailable hostnames, pre-existing connections and proxy forwarding limit coverage. See [network filter setup and acceptance tests](docs/network-filter.md) for signing prerequisites and limitations.
 
 ## Build and run
 

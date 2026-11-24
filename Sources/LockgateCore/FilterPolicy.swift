@@ -4,14 +4,6 @@ public struct NetworkFilterPreferences: Codable, Equatable {
     public var enabled = false
     public var includeOtherApps = false
     public var addresses = Self.defaultAddresses
-    /// 通过内置 mihomo 内核阻断（不需要系统扩展）。可选字段，兼容旧的设置文件。
-    public var coreGate: Bool?
-
-    public var gateEnabled: Bool {
-        get { coreGate ?? false }
-        set { coreGate = newValue }
-    }
-
     public var rules: [NetworkAddressRule] { addresses.compactMap(NetworkAddressRule.init) }
 
     public static let defaultAddresses = ["claude.ai", "*.claude.ai", "api.anthropic.com",

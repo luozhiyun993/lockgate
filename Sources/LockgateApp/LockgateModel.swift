@@ -11,7 +11,6 @@ struct LockgateEvent: Identifiable, Codable {
 @MainActor
 final class LockgateModel: ObservableObject {
     let networkFilter = NetworkFilterController()
-    let proxy = ProxyModel()
     @Published var savingSettings = false
     private var filterApproved = false
     private var filterTask: Task<Void, Never>?
@@ -54,13 +53,11 @@ final class LockgateModel: ObservableObject {
             events = Array(saved.prefix(200))
         }
         record("应用已打开。监控处于观察模式，启用保护后才会执行急停。")
-        proxy.onEvent = { [weak self] text in self?.record(text) }
         persist()
         filterTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
                 if !self.recovering { await self.networkFilter.poll(policy: self.filterPolicy) }
-                await self.syncGate()
                 self.persist()
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
@@ -130,11 +127,7 @@ final class LockgateModel: ObservableObject {
     var statusDetail: String {
         if let reason = state.lockedReason { return reason }
         if !state.enabled { return "正在检测环境。启用保护后，异常将触发急停。" }
-        if !filterReady {
-            let preferences = state.settings.filterPreferences
-            return preferences.enabled && !networkFilter.permitsLaunch(policy: filterPolicy)
-                ? networkFilter.status : proxy.gateStatus.summary
-        }
+        if !filterReady { return networkFilter.status }
         switch decision {
         case .allow: return "启动门禁已就绪，正在持续检查代理、出口与进程。"
         case .warn(let reason), .wait(let reason), .trip(let reason): return reason
@@ -164,25 +157,14 @@ final class LockgateModel: ObservableObject {
         }
     }
 
-    /// 已开启的网络阻断方式（系统扩展、内核阻断）是否都确认处于放行状态。
+    /// 系统扩展方式的网络阻断开启时，是否已确认处于放行状态；未开启时视为就绪。
     var filterReady: Bool {
-        let preferences = state.settings.filterPreferences
-        return (!preferences.enabled || networkFilter.permitsLaunch(policy: filterPolicy))
-            && (!preferences.gateEnabled || proxy.gateAllowing)
-    }
-
-    /// 内核阻断只在保护启用时拦截：已锁定，或尚未通过检查时拒绝；暂停保护后放行。
-    func syncGate() async {
-        let preferences = state.settings.filterPreferences
-        let addresses = preferences.gateEnabled ? preferences.rules.map { $0.subdomains ? "*.\($0.value)" : $0.value } : nil
-        let blocked = state.enabled && (state.lockedReason != nil || !filterApproved)
-        await proxy.syncGate(addresses: addresses, blocked: blocked)
+        !state.settings.filterPreferences.enabled || networkFilter.permitsLaunch(policy: filterPolicy)
     }
 
     func persist() {
         state.heartbeat = Date()
-        let preferences = state.settings.filterPreferences
-        state.filterReadyUntil = filterReady && (preferences.enabled || preferences.gateEnabled)
+        state.filterReadyUntil = filterReady && state.settings.filterPreferences.enabled
             ? Date().addingTimeInterval(4) : nil
         do { try store.save(state) }
         catch {
@@ -276,7 +258,6 @@ final class LockgateModel: ObservableObject {
             record("已锁定：\(reason)")
             notice = "已触发保护：\(reason)"
             NSSound.beep()
-            Task { await syncGate() }
         }
     }
 
@@ -303,7 +284,6 @@ final class LockgateModel: ObservableObject {
         filterApproved = false
         revision += 1
         record("用户停止保护；系统过滤已停用或未安装。已有锁定保持。")
-        await syncGate()
         persist()
         return true
     }
@@ -374,7 +354,6 @@ final class LockgateModel: ObservableObject {
         await refreshLocal()
         await refreshExit()
         await networkFilter.poll(policy: filterPolicy)
-        await syncGate()
         persist()
         guard revision == capturedRevision, localRevision > oldLocalRevision,
               Date().timeIntervalSince(lastNetworkUpdate) < 2 else {
@@ -409,7 +388,6 @@ final class LockgateModel: ObservableObject {
             guard state.recover(decision) else { return }
             filterApproved = true
             await networkFilter.poll(policy: filterPolicy)
-            await syncGate()
             persist()
             notice = "检查通过，已解除锁定。不会自动重新打开 Claude。"
             record(notice)

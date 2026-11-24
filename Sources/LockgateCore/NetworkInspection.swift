@@ -89,6 +89,28 @@ public enum SystemProxyParser {
 
     private static func enabled(_ value: Any?) -> Bool { (value as? NSNumber)?.intValue == 1 }
 
+    private static let safeNetworks: Set<String> = [
+        "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16",
+        "::1/128", "fc00::/7", "fe80::/10"
+    ]
+
+    /// 仅覆盖本机、链路本地或私有地址的绕过条目：固定的私有网段，或落在这些网段内的单个地址。
+    /// 其他网段（包括 Fake-IP 使用的 198.18.0.0/15）一律不算。
+    public static func isLocalBypass(_ pattern: String) -> Bool {
+        let pattern = pattern.lowercased().trimmingCharacters(in: .whitespaces)
+        if safeNetworks.contains(pattern) { return true }
+        guard !pattern.contains("/"), !pattern.contains("*"), let address = IPAddress.normalized(pattern) else { return false }
+        if address.contains(":") {
+            guard address != "::1" else { return true }
+            guard let first = address.split(separator: ":").first, let prefix = UInt16(first, radix: 16) else { return false }
+            return (0xfc00...0xfdff).contains(prefix) || (0xfe80...0xfebf).contains(prefix)
+        }
+        let bytes = address.split(separator: ".").compactMap { Int($0) }
+        guard bytes.count == 4 else { return false }
+        return bytes[0] == 127 || bytes[0] == 10 || (bytes[0] == 172 && (16...31).contains(bytes[1]))
+            || (bytes[0] == 192 && bytes[1] == 168) || (bytes[0] == 169 && bytes[1] == 254)
+    }
+
     public static func parse(_ values: [String: Any]) -> ProxyConfiguration {
         if enabled(values["ProxyAutoConfigEnable"]) || enabled(values["ProxyAutoDiscoveryEnable"]) {
             return .unsupported("检测到 PAC / 自动代理，暂不能确认各目标路径；请使用系统静态 HTTPS 代理或全局隧道。")
@@ -112,7 +134,7 @@ public enum SystemProxyParser {
             }
             for exception in values["ExceptionsList"] as? [String] ?? [] {
                 let pattern = exception.lowercased().trimmingCharacters(in: .whitespaces)
-                if pattern == "<local>" || SystemProxyPlan.isLocalBypass(pattern) { continue }
+                if pattern == "<local>" || isLocalBypass(pattern) { continue }
                 if pattern.contains("/") || IPAddress.normalized(pattern) != nil || (pattern.contains("*") && !pattern.hasSuffix(".local")) {
                     return .unsupported("系统代理包含 IP / 网段或通配绕过规则，暂不能确认目标是否被绕过。")
                 }

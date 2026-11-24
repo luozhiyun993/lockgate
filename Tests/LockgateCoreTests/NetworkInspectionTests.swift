@@ -143,4 +143,15 @@ final class NetworkInspectionTests: XCTestCase {
         await fulfillment(of: [requested], timeout: 3)
         guard case .unknown = result else { return XCTFail("Rejected proxy must not return direct exit success") }
     }
+
+    func testLocalBypassOnlyCoversLoopbackAndPrivateRanges() {
+        for pattern in ["127.0.0.1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16",
+                        "192.168.1.20", "::1", "fd00::1", "fe80::1"] {
+            XCTAssertTrue(SystemProxyParser.isLocalBypass(pattern), pattern)
+        }
+        for pattern in ["0.0.0.0/0", "8.8.8.8", "160.79.104.0/23", "10.0.0.0/4", "*.anthropic.com", "192.168.*",
+                        "198.18.0.1", "198.18.0.0/15", "0.0.0.0", "172.32.0.1", "2001:db8::1"] {
+            XCTAssertFalse(SystemProxyParser.isLocalBypass(pattern), pattern)
+        }
+    }
 }

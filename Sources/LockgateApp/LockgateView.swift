@@ -4,10 +4,6 @@ import LockgateCore
 
 private enum Page: String, CaseIterable {
     case overview = "保护概览"
-    case proxy = "代理"
-    case subscriptions = "订阅"
-    case overrides = "覆写"
-    case monitor = "实时监控"
     case settings = "出口与规则"
     case tests = "保护测试"
     case activity = "事件记录"
@@ -15,10 +11,6 @@ private enum Page: String, CaseIterable {
     var icon: String {
         switch self {
         case .overview: return "square.grid.2x2"
-        case .proxy: return "bolt.horizontal.circle"
-        case .subscriptions: return "list.bullet.rectangle"
-        case .overrides: return "wand.and.stars"
-        case .monitor: return "waveform.path.ecg"
         case .settings: return "slider.horizontal.3"
         case .tests: return "checkmark.shield"
         case .activity: return "clock.arrow.circlepath"
@@ -81,10 +73,6 @@ struct LockgateView: View {
                         }
                         switch page {
                         case .overview: overview
-                        case .proxy: ProxyPage(proxy: model.proxy, protectionEnabled: model.state.enabled)
-                        case .subscriptions: SubscriptionPage(proxy: model.proxy)
-                        case .overrides: OverridePage(proxy: model.proxy)
-                        case .monitor: MonitorPage(monitor: model.proxy.monitor, running: model.proxy.running)
                         case .settings: settings
                         case .tests: tests
                         case .activity: activity
@@ -131,10 +119,6 @@ struct LockgateView: View {
     private var subtitle: String {
         switch page {
         case .overview: return "为 Claude 的每次启动与持续运行检查代理环境。"
-        case .proxy: return "内置 mihomo 内核：系统代理、TUN 模式与节点选择。"
-        case .subscriptions: return "管理代理订阅，更新节点与规则。"
-        case .overrides: return "用 YAML 或脚本修改订阅配置，订阅更新后依然生效。"
-        case .monitor: return "查看每条连接从哪个出口出去，哪些流量走了代理。"
         case .settings: return "参考地区检查规则，可额外固定一个出口 IP。"
         case .tests: return "先安全演练，再按需验证真实急停。"
         case .activity: return "查看检测变化、锁定原因与恢复操作。"
@@ -168,7 +152,6 @@ struct LockgateView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Label("系统网络检测", systemImage: "network").font(.system(size: 12, weight: .medium))
                 Text("macOS · 隧道 / HTTPS 代理").font(.system(size: 11)).foregroundStyle(.secondary)
-                ProxySidebarStatus(proxy: model.proxy)
                 Divider().padding(.vertical, 4)
                 Text("关闭窗口后仍在菜单栏运行。\n退出应用会停止保护。")
                     .font(.system(size: 11)).foregroundStyle(.secondary).lineSpacing(4)
@@ -278,13 +261,10 @@ struct LockgateView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             card("网络路径自动识别", icon: "network") {
-                Text("支持将系统流量接入隧道的 VPN / TUN，以及 macOS 静态 HTTPS 代理。可以使用 Lockgate 的内置代理，也可以继续使用其他代理客户端。")
+                Text("支持将系统流量接入隧道的 VPN / TUN，以及 macOS 静态 HTTPS 代理。Lockgate 只检测，不修改代理设置，代理由你自己的代理客户端提供。")
                     .font(.system(size: 13))
                 Text("PAC、仅 SOCKS 和无法确认的配置会阻止新的受管启动。系统代理模式下，Claude Code 需从本应用启动以继承检测到的代理。")
                     .font(.caption).foregroundStyle(.secondary)
-            }
-            card("网络阻断", icon: "network") {
-                NetworkFilterSettingsView(preferences: $draft.filterPreferences, proxy: model.proxy)
             }
             card("指定出口 IP", icon: "pin") {
                 Toggle("启用严格 IP 匹配", isOn: $draft.pinEnabled)

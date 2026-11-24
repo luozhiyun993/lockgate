@@ -7,9 +7,7 @@ import Darwin
 enum LockgateEntry {
     @MainActor
     static func main() {
-        if CommandLine.arguments.contains(OverrideRunner.workerFlag) {
-            OverrideRunner.workerMain()
-        } else if CommandLine.arguments.contains("--guarded-cli") {
+        if CommandLine.arguments.contains("--guarded-cli") {
             CLIEntry.run()
         } else {
             let others = NSRunningApplication.runningApplications(withBundleIdentifier: "dev.local.lockgate")
@@ -33,11 +31,7 @@ struct LockgateApp: App {
                 .frame(minWidth: 980, minHeight: 720)
                 .modifier(MainWindowReopenHandler(delegate: appDelegate))
                 .onAppear {
-                    appDelegate.stopForTermination = {
-                        guard await model.stopProtection() else { return false }
-                        await model.proxy.shutdown()
-                        return true
-                    }
+                    appDelegate.stopForTermination = { await model.stopProtection() }
                 }
         }
         .defaultSize(width: 1080, height: 800)
@@ -54,11 +48,10 @@ struct LockgateApp: App {
     }
 
     private func confirmQuit() {
-        if model.state.enabled || model.proxy.running {
+        if model.state.enabled {
             let alert = NSAlert()
-            alert.messageText = model.proxy.running ? "退出后将停止内置代理和保护" : "退出后将停止持续监控和急停保护"
-            alert.informativeText = (model.proxy.running ? "内置代理会停止，系统代理会恢复为关闭，依赖它的连接将断开。" : "")
-                + "当前 Claude 可以继续运行。异常锁定会保存，下次打开后仍需要手动恢复。"
+            alert.messageText = "退出后将停止持续监控和急停保护"
+            alert.informativeText = "当前 Claude 可以继续运行。异常锁定会保存，下次打开后仍需要手动恢复。"
             alert.addButton(withTitle: "取消")
             alert.addButton(withTitle: "退出并停止保护")
             guard alert.runModal() == .alertSecondButtonReturn else { return }
@@ -76,8 +69,6 @@ struct MenuContents: View {
         Divider()
         Text("网络：\(model.networkStatus.summary)")
         Text("进程：\(model.processStatus.summary)")
-        Divider()
-        ProxyMenuItems(proxy: model.proxy)
         Divider()
         Button("打开控制面板") {
             openWindow(id: "main")
