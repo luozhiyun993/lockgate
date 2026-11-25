@@ -59,7 +59,7 @@ open "dist/Lockgate.app"
 
 - 输入、输出、缓存读取、缓存写入四类互不重叠；Codex 日志里的输入含缓存部分，已拆开统计。
 - 同一请求在日志中重复出现或被恢复的会话复制时只计一次。
-- 只能看到日志还在本机的用量：agent 清理旧日志后（Claude Code 默认保留约 30 天）对应记录不再出现。Claude Desktop 不在本机记录用量。
+- 已统计的用量缓存在 `~/Library/Application Support/Lockgate/token-usage-cache.plist`，之后只读日志里新增的部分；agent 清理旧日志后（Claude Code 默认保留约 30 天），已缓存的用量仍会保留。页面底部的「清空用量缓存」会从现存日志重新统计，此前只存在缓存里的旧用量随之消失。首次统计之前就已被清理的日志无法找回。Claude Desktop 不在本机记录用量。
 - 费用按公开 API 标准价估算（内置价格表，核对日期见页面底部），区分 Claude 的 5 分钟 / 1 小时缓存写入与快速模式，不含长上下文加价；订阅套餐或第三方转发的实际扣费与此不同。价格未知的模型不计入费用并标注「+」，可点页面底部的「更新价格表」联网更新：只在点击时从 GitHub 下载 LiteLLM 项目公开维护的价格文件，不带任何登录凭据，结果存为同目录下的 `model-prices-remote.json`，删除该文件即恢复内置价格。也可在 `~/Library/Application Support/Lockgate/model-prices.json` 里手动补充或覆盖（优先级最高），格式为 `{"模型名": {"input": 2, "output": 10, "cacheRead": 0.1}}`（美元 / 百万 token）。
 - `swift run lockgate-diagnostics --usage` 可在终端输出同一份汇总。
 

@@ -38,7 +38,8 @@ final class TokenUsageModel: ObservableObject {
     @Published private(set) var priceNotice = ""
     /// LiteLLM 项目公开维护的价格文件；只在用户点击「更新价格表」时请求，不带任何凭据。
     static let priceSource = URL(string: "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json")!
-    private let scanner = TokenUsageScanner()
+    private let scanner = TokenUsageScanner(
+        cache: StateStore.defaultDirectory.appendingPathComponent(TokenUsageScanner.cacheFileName))
     private var ledger = UsageLedger()
 
     func refresh() async {
@@ -48,6 +49,14 @@ final class TokenUsageModel: ObservableObject {
         ledger = await scanner.refresh()
         updated = Date()
         summarize()
+    }
+
+    /// 丢弃本地缓存并从现存日志重新统计。
+    func clearCache() async {
+        await scanner.clearCache()
+        // 正在进行的刷新会在清空后的状态上继续，这里等它结束再完整重扫一遍。
+        while loading { try? await Task.sleep(nanoseconds: 100_000_000) }
+        await refresh()
     }
 
     func updatePrices() async {
@@ -155,6 +164,7 @@ struct TokenUsageView: View {
     @State private var selectedDay: Date?
     @State private var tab: Breakdown = .models
     @State private var expanded = false
+    @State private var confirmingClear = false
 
     private var calendar: Calendar { Calendar.current }
     private var today: Date { calendar.startOfDay(for: Date()) }
@@ -657,6 +667,17 @@ struct TokenUsageView: View {
                      ?? "价格表：内置（\(PriceTable.builtInDate) 核对）")
                 if !model.priceNotice.isEmpty { Text(model.priceNotice) }
                 Spacer()
+                Button(role: .destructive) { confirmingClear = true } label: {
+                    Label("清空用量缓存", systemImage: "trash")
+                }
+                .disabled(model.loading)
+                .help("已统计的用量缓存在本机，之后只读日志里新增的部分。清空后从现存日志重新统计。")
+                .confirmationDialog("清空用量缓存？", isPresented: $confirmingClear) {
+                    Button("清空并重新统计", role: .destructive) { Task { await model.clearCache() } }
+                    Button("取消", role: .cancel) {}
+                } message: {
+                    Text("会从本机现存的会话日志重新统计。日志已被 agent 清理的旧用量只存在缓存里，清空后无法恢复。")
+                }
             }
             Text("估算费用按公开 API 标准价由本机记录的 token 用量折算，不是订阅账单，也不含长上下文加价；带「+」表示还有价格未知的模型未计入。")
             Text("用量只来自本机 ~/.claude 与 ~/.codex 的会话日志：只读解析，不请求任何官方接口、不读取对话内容；只有点击「更新价格表」时才联网。"

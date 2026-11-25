@@ -1,7 +1,7 @@
 import Foundation
 
 /// 本机会话日志里能读到 token 用量的 agent。
-public enum UsageAgent: String, CaseIterable, Sendable {
+public enum UsageAgent: String, CaseIterable, Codable, Sendable {
     case claudeCode
     case codex
 
@@ -14,7 +14,7 @@ public enum UsageAgent: String, CaseIterable, Sendable {
 }
 
 /// 四类 token 互不重叠：`input` 不含缓存读写，相加即总量。
-public struct TokenCounts: Equatable, Sendable {
+public struct TokenCounts: Equatable, Codable, Sendable {
     public var input: Int
     public var output: Int
     public var cacheRead: Int
@@ -47,7 +47,7 @@ public struct TokenCounts: Equatable, Sendable {
     public static func += (lhs: inout TokenCounts, rhs: TokenCounts) { lhs = lhs + rhs }
 }
 
-public struct UsageBucketKey: Hashable, Sendable {
+public struct UsageBucketKey: Hashable, Codable, Sendable {
     public var agent: UsageAgent
     public var model: String
     /// 会话的工作目录；日志里没有时为空字符串。
@@ -108,7 +108,7 @@ public enum ClaudeCodeUsageParser {
 }
 
 /// 解析 `~/.codex/sessions/**/*.jsonl`。模型和工作目录写在别的行里，所以每个文件要按顺序喂给同一个解析器。
-public struct CodexUsageParser: Sendable {
+public struct CodexUsageParser: Codable, Sendable {
     private var model = "unknown"
     private var project = ""
     private var session = ""
@@ -411,15 +411,80 @@ public struct UsageLedger: Sendable {
     }
 }
 
+/// 账本落盘时把重复出现的分组和来源文件换成下标，避免每条去重记录都带一份完整路径。
+extension UsageLedger: Codable {
+    private struct Stored: Codable {
+        var keys: [UsageBucketKey] = []
+        var counts: [TokenCounts] = []
+        var sources: [String] = []
+        var seenIDs: [String] = []
+        var seenKeys: [Int] = []
+        var seenSources: [Int] = []
+        var seenCounts: [TokenCounts] = []
+    }
+
+    public init(from decoder: Decoder) throws {
+        let stored = try Stored(from: decoder)
+        let count = stored.seenIDs.count
+        guard stored.counts.count == stored.keys.count, stored.seenKeys.count == count,
+              stored.seenSources.count == count, stored.seenCounts.count == count,
+              stored.seenKeys.allSatisfy(stored.keys.indices.contains),
+              stored.seenSources.allSatisfy(stored.sources.indices.contains) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "账本缓存不一致"))
+        }
+        buckets = Dictionary(zip(stored.keys, stored.counts)) { $0 + $1 }
+        for index in 0..<count {
+            seen[stored.seenIDs[index]] = Seen(source: stored.sources[stored.seenSources[index]],
+                                               key: stored.keys[stored.seenKeys[index]], counts: stored.seenCounts[index])
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var stored = Stored()
+        var keyIndex: [UsageBucketKey: Int] = [:], sourceIndex: [String: Int] = [:]
+        for (key, counts) in buckets {
+            keyIndex[key] = stored.keys.count
+            stored.keys.append(key)
+            stored.counts.append(counts)
+        }
+        for (id, entry) in seen {
+            guard let key = keyIndex[entry.key] else { continue }
+            if sourceIndex[entry.source] == nil {
+                sourceIndex[entry.source] = stored.sources.count
+                stored.sources.append(entry.source)
+            }
+            stored.seenIDs.append(id)
+            stored.seenKeys.append(key)
+            stored.seenSources.append(sourceIndex[entry.source] ?? 0)
+            stored.seenCounts.append(entry.counts)
+        }
+        try stored.encode(to: encoder)
+    }
+}
+
 /// 增量扫描本机会话日志。文件只追加，所以每次只读上次之后新增的完整行。
 public actor TokenUsageScanner {
-    private struct FileState {
+    private struct FileState: Codable {
         var offset: UInt64 = 0
         var codex = CodexUsageParser()
     }
 
+    /// 落盘的扫描进度：各文件读到的位置和已汇总的账本。
+    private struct Cache: Codable {
+        static let currentVersion = 1
+        var version = Cache.currentVersion
+        /// 账本按自然日分组，换了时区就不能沿用。
+        var timeZone: String
+        var files: [String: FileState]
+        var ledger: UsageLedger
+    }
+
+    public static let cacheFileName = "token-usage-cache.plist"
+
     private let roots: [(agent: UsageAgent, directory: URL)]
     private let calendar: Calendar
+    private let cache: URL?
+    private var loaded = false
     private var files: [String: FileState] = [:]
     private var ledger = UsageLedger()
 
@@ -431,14 +496,48 @@ public actor TokenUsageScanner {
                 (.codex, home.appendingPathComponent(".codex/archived_sessions"))]
     }
 
+    /// 给了 `cache` 就把扫描进度存到该文件，下次启动接着读，不再重算历史。
     public init(roots: [(agent: UsageAgent, directory: URL)] = TokenUsageScanner.defaultRoots,
-                calendar: Calendar = .current) {
+                calendar: Calendar = .current, cache: URL? = nil) {
         self.roots = roots
         self.calendar = calendar
+        self.cache = cache
     }
 
-    /// 读取新增内容并返回最新账本。已被 agent 清理掉的旧日志，其用量保留到本次运行结束。
+    /// 丢弃缓存和已汇总的用量，下次 `refresh` 从头扫描。日志已被 agent 清理的用量随之消失。
+    public func clearCache() {
+        loaded = true
+        files = [:]
+        ledger = UsageLedger()
+        if let cache { try? FileManager.default.removeItem(at: cache) }
+    }
+
+    private func loadCache() {
+        guard !loaded else { return }
+        loaded = true
+        guard let cache, let data = try? Data(contentsOf: cache),
+              let stored = try? PropertyListDecoder().decode(Cache.self, from: data),
+              stored.version == Cache.currentVersion, stored.timeZone == calendar.timeZone.identifier else { return }
+        files = stored.files
+        ledger = stored.ledger
+    }
+
+    private func saveCache() {
+        guard let cache else { return }
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
+        guard let data = try? encoder.encode(Cache(timeZone: calendar.timeZone.identifier, files: files, ledger: ledger))
+        else { return }
+        try? FileManager.default.createDirectory(at: cache.deletingLastPathComponent(), withIntermediateDirectories: true)
+        // 缓存里有项目路径，只让当前用户读。
+        guard (try? data.write(to: cache, options: .atomic)) != nil else { return }
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cache.path)
+    }
+
+    /// 读取新增内容并返回最新账本。已被 agent 清理掉的旧日志，其用量保留在账本（和缓存）里。
     public func refresh() -> UsageLedger {
+        loadCache()
+        var changed = false
         var listing: [(agent: UsageAgent, url: URL, size: UInt64)] = []
         for root in roots {
             guard let enumerator = FileManager.default.enumerator(
@@ -452,14 +551,18 @@ public actor TokenUsageScanner {
         if listing.contains(where: { $0.size < (files[$0.url.path]?.offset ?? 0) }) {
             files = [:]
             ledger = UsageLedger()
+            changed = true
         }
         for entry in listing {
             if Task.isCancelled { break }
             var state = files[entry.url.path] ?? FileState()
             guard entry.size > state.offset else { continue }
+            let before = state.offset
             read(entry.url, agent: entry.agent, state: &state)
             files[entry.url.path] = state
+            changed = changed || state.offset != before
         }
+        if changed { saveCache() }
         return ledger
     }
 

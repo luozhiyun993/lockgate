@@ -198,4 +198,46 @@ final class TokenUsageTests: XCTestCase {
         total = await scanner.refresh().summary().total.total
         XCTAssertEqual(total, 1341, "文件被改写后整体重算")
     }
+
+    func testScannerCachePersistsProgressAndCanBeCleared() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("lockgate-usage-\(UUID().uuidString)")
+        let logs = root.appendingPathComponent("logs")
+        let file = logs.appendingPathComponent("project/session.jsonl")
+        let cache = root.appendingPathComponent("state/cache.plist")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let newline = Data("\n".utf8)
+        try (claudeLine(id: "a") + newline).write(to: file)
+
+        func scanner() -> TokenUsageScanner {
+            TokenUsageScanner(roots: [(.claudeCode, logs)], calendar: calendar, cache: cache)
+        }
+        var total = await scanner().refresh().summary().total.total
+        XCTAssertEqual(total, 1341)
+
+        // 新实例从缓存接着读：已计入的行不重读，跨实例的重复请求仍只计一次。
+        let copy = logs.appendingPathComponent("project/resumed.jsonl")
+        try (claudeLine(id: "a") + newline + claudeLine(id: "b") + newline).write(to: copy)
+        total = await scanner().refresh().summary().total.total
+        XCTAssertEqual(total, 2682)
+
+        // 日志被清理后，缓存里的用量还在。
+        try FileManager.default.removeItem(at: file)
+        try FileManager.default.removeItem(at: copy)
+        total = await scanner().refresh().summary().total.total
+        XCTAssertEqual(total, 2682)
+
+        // 时区变了，按天分组的缓存作废。
+        var other = calendar
+        other.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        total = await TokenUsageScanner(roots: [(.claudeCode, logs)], calendar: other, cache: cache)
+            .refresh().summary().total.total
+        XCTAssertEqual(total, 0)
+
+        let cleared = scanner()
+        await cleared.clearCache()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cache.path))
+        total = await cleared.refresh().summary().total.total
+        XCTAssertEqual(total, 0)
+    }
 }
