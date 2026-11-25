@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 import LockgateCore
 
 private enum Page: String, CaseIterable {
@@ -97,7 +98,7 @@ struct LockgateView: View {
             Button("取消", role: .cancel) {}
             Button("启用保护") { model.enableProtection() }
         } message: {
-            Text("确认异常后会终止当前用户选中的 Claude 进程，包括从其他入口启动的进程。正在生成的回答或执行中的任务可能中断。网络超时只告警。")
+            Text("确认异常后会终止当前用户选中的 Claude 进程\(customStopHint)，包括从其他入口启动的进程。正在生成的回答或执行中的任务可能中断。网络超时只告警。")
         }
         .alert("暂停保护？", isPresented: $confirmPause) {
             Button("取消", role: .cancel) {}
@@ -107,17 +108,35 @@ struct LockgateView: View {
             Button("取消", role: .cancel) {}
             Button("确认急停并锁定", role: .destructive) { model.realStopTest() }
         } message: {
-            Text("会终止当前用户选中的 Claude Desktop / Code 进程，并持续阻止其运行，直到检查通过并手动解锁。请先保存工作。")
+            Text("会终止当前用户选中的 Claude Desktop / Code 进程\(customStopHint)，并持续阻止其运行，直到检查通过并手动解锁。请先保存工作。")
         }
         .alert("一键急停全部 Claude？", isPresented: $confirmEmergencyStop) {
             Button("取消", role: .cancel) {}
             Button("立即终止全部 Claude", role: .destructive) { model.emergencyStopAllClaude() }
         } message: {
-            Text("会终止当前用户所有已核实的 Claude Desktop / Code 进程，不受保护对象勾选限制。未保存的工作可能丢失；无法核实身份的进程不会仅凭名称终止。")
+            Text("会终止当前用户所有已核实的 Claude Desktop / Code 进程\(customStopHint)，不受保护对象勾选限制。未保存的工作可能丢失；无法核实身份的进程不会仅凭名称终止。")
         }
         .alert("Lockgate", isPresented: Binding(get: { !model.notice.isEmpty }, set: { if !$0 { model.notice = "" } })) {
             Button("知道了") { model.notice = "" }
         } message: { Text(model.notice) }
+    }
+
+    private var customStopHint: String {
+        let count = model.state.settings.customStopApplications.count
+        return count == 0 ? "" : "，以及你添加的 \(count) 个自定义软件"
+    }
+
+    private func addCustomStopApplications() {
+        let panel = NSOpenPanel()
+        panel.title = "选择急停时一并关闭的软件"
+        panel.prompt = "添加"
+        panel.allowedContentTypes = [.application, .unixExecutable]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.directoryURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
+        guard panel.runModal() == .OK else { return }
+        draft.customStopApplications = CustomStopTargets.normalized(
+            draft.customStopApplications + panel.urls.map(\.path))
     }
 
     private var subtitle: String {
@@ -290,6 +309,30 @@ struct LockgateView: View {
                 Toggle("Claude Desktop", isOn: $draft.protectDesktop)
                 Toggle("Claude Code", isOn: $draft.protectCLI)
                 Text("仅处理当前用户匹配到的 Claude 进程。锁定期间从其他入口启动，也会在巡检后终止。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            card("急停时一并关闭的软件", icon: "xmark.app") {
+                Text("急停与锁定期间，除 Claude 外还会终止这里列出的软件，例如浏览器或其他需要走代理的客户端。只影响急停，不参与启动门禁检查。")
+                    .font(.caption).foregroundStyle(.secondary)
+                ForEach(draft.customStopApplications, id: \.self) { path in
+                    HStack(spacing: 10) {
+                        Image(nsImage: NSWorkspace.shared.icon(forFile: (path as NSString).expandingTildeInPath))
+                            .resizable().frame(width: 22, height: 22)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(FileManager.default.displayName(atPath: (path as NSString).expandingTildeInPath))
+                                .font(.system(size: 13, weight: .medium))
+                            Text(path).font(.caption2).foregroundStyle(.secondary)
+                                .lineLimit(1).truncationMode(.middle)
+                        }
+                        Spacer()
+                        Button { draft.customStopApplications.removeAll { $0 == path } } label: {
+                            Image(systemName: "minus.circle")
+                        }.buttonStyle(.borderless).help("移除")
+                    }
+                }
+                Button { addCustomStopApplications() } label: { Label("添加软件…", systemImage: "plus") }
+                    .disabled(draft.customStopApplications.count >= CustomStopTargets.limit)
+                Text("应用会连同其辅助进程一起关闭，未保存的内容可能丢失。锁定解除前重新打开也会被再次关闭。修改后需点击「保存并重新检查」。")
                     .font(.caption).foregroundStyle(.secondary)
             }
             card("安装位置（可选）", icon: "folder") {

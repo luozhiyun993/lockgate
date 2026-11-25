@@ -194,6 +194,43 @@ final class LockgatePolicyTests: XCTestCase {
         XCTAssertEqual(ExitObservation.parse("fl=test\nip=8.8.8.8\nloc=JP\n", now: now)?.country, "JP")
     }
 
+    func testCustomStopTargetsMatchBundleAndExactExecutableOnly() {
+        let uid = getuid()
+        func process(_ pid: Int32, _ path: String, uid: UInt32 = uid, verified: Bool = true) -> ProcessIdentity {
+            ProcessIdentity(pid: pid, uid: uid, started: "1.000000", executable: path, executableVerified: verified)
+        }
+        let processes = [
+            process(90001, "/Applications/Demo.app/Contents/MacOS/Demo"),
+            process(90002, "/Applications/Demo.app/Contents/Frameworks/Helper.app/Contents/MacOS/Helper"),
+            process(90003, "/Applications/Demo.app.backup/Contents/MacOS/Demo"),
+            process(90004, "/Applications/Demo2.app/Contents/MacOS/Demo2"),
+            process(90005, "/opt/tools/bin/agent"),
+            process(90006, "/opt/tools/bin/agent-helper"),
+            process(90007, "/Applications/Demo.app/Contents/MacOS/Demo", uid: uid &+ 1),
+            process(90008, "Demo", verified: false),
+            process(getpid(), "/Applications/Demo.app/Contents/MacOS/Self")
+        ]
+        let entries = [" /Applications/Demo.app ", "/opt/tools/bin/agent", "", "/Applications/Demo.app"]
+        XCTAssertEqual(CustomStopTargets.normalized(entries), ["/Applications/Demo.app", "/opt/tools/bin/agent"])
+        XCTAssertEqual(CustomStopTargets.targets(in: processes, entries: entries).map(\.pid), [90001, 90002, 90005])
+        XCTAssertTrue(CustomStopTargets.targets(in: processes, entries: []).isEmpty)
+        XCTAssertTrue(CustomStopTargets.targets(in: processes, entries: ["Demo", "/"]).isEmpty)
+    }
+
+    func testCustomStopSettingsValidateAndLoadFromOldState() throws {
+        var settings = LockgateSettings()
+        settings.customStopApplications = ["/Applications/Demo.app", "~/Applications/Other.app"]
+        XCTAssertNil(settings.validationError)
+        let decoded = try JSONDecoder().decode(LockgateSettings.self, from: JSONEncoder().encode(settings))
+        XCTAssertEqual(decoded, settings)
+        settings.customStopApplications = ["Demo.app"]
+        XCTAssertNotNil(settings.validationError)
+        settings.customStopApplications = (0...CustomStopTargets.limit).map { "/Applications/App\($0).app" }
+        XCTAssertNotNil(settings.validationError)
+        let old = Data(#"{"country":"JP","pinnedIP":"","pinEnabled":false,"protectDesktop":true,"protectCLI":true}"#.utf8)
+        XCTAssertEqual(try JSONDecoder().decode(LockgateSettings.self, from: old).customStopApplications, [])
+    }
+
     func testInvalidSettingsBlock() {
         var settings = LockgateSettings()
         settings.country = "Japan"

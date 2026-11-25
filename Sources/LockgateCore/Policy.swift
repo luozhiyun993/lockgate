@@ -9,6 +9,8 @@ public struct LockgateSettings: Codable, Equatable {
     public var protectCLI = true
     public var desktopApplicationPath = ""
     public var cliExecutablePath = ""
+    /// 急停时一并终止的自定义软件：`.app` 应用包路径或单个可执行文件路径。
+    public var customStopApplications: [String] = []
     public var networkFilter: NetworkFilterPreferences?
 
     public var filterPreferences: NetworkFilterPreferences {
@@ -19,7 +21,7 @@ public struct LockgateSettings: Codable, Equatable {
     public init() {}
 
     enum CodingKeys: String, CodingKey {
-        case country, pinnedIP, pinEnabled, protectDesktop, protectCLI, desktopApplicationPath, cliExecutablePath, networkFilter
+        case country, pinnedIP, pinEnabled, protectDesktop, protectCLI, desktopApplicationPath, cliExecutablePath, customStopApplications, networkFilter
     }
 
     public init(from decoder: Decoder) throws {
@@ -31,6 +33,7 @@ public struct LockgateSettings: Codable, Equatable {
         protectCLI = try values.decode(Bool.self, forKey: .protectCLI)
         desktopApplicationPath = try values.decodeIfPresent(String.self, forKey: .desktopApplicationPath) ?? ""
         cliExecutablePath = try values.decodeIfPresent(String.self, forKey: .cliExecutablePath) ?? ""
+        customStopApplications = try values.decodeIfPresent([String].self, forKey: .customStopApplications) ?? []
         networkFilter = try values.decodeIfPresent(NetworkFilterPreferences.self, forKey: .networkFilter)
     }
 
@@ -51,7 +54,7 @@ public struct LockgateSettings: Codable, Equatable {
                 return "安装路径请填写绝对路径或以 ~/ 开头的路径。"
             }
         }
-        return nil
+        return CustomStopTargets.validationError(customStopApplications)
     }
 }
 

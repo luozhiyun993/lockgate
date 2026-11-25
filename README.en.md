@@ -51,6 +51,8 @@ The app starts in **observation mode**: it checks the environment without termin
 
 Overview also provides **Emergency-stop all Claude (一键急停全部 Claude)**. After confirmation, it terminates all verified Claude Desktop / Code processes owned by the current user, regardless of the selected protection toggles. It never kills an unresolved process by name alone; save your work first.
 
+Under **出口与规则**, the card **急停时一并关闭的软件** lets you add custom software (an `.app` bundle or a single executable). Automatic emergency stops, lockout enforcement and the one-click stop also terminate these apps and their helper processes. They are matched by executable path only and do not take part in the launch gate.
+
 Closing the window leaves the menu bar app running. Quitting stops monitoring and process enforcement. Reopening returns to observation mode while retaining any existing lockout. This version does not install a system daemon or enable launch at login.
 
 ## Token usage

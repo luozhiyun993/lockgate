@@ -291,6 +291,7 @@ final class LockgateModel: ObservableObject {
     func saveSettings(_ settings: LockgateSettings) {
         var settings = settings
         var preferences = settings.filterPreferences
+        settings.customStopApplications = CustomStopTargets.normalized(settings.customStopApplications)
         preferences.addresses = preferences.addresses.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }.filter { !$0.isEmpty }
         // 系统扩展方式的开关已从界面移除；保存时一并关闭，避免旧设置里残留的开启状态无法取消。
         preferences.enabled = false
@@ -405,13 +406,20 @@ final class LockgateModel: ObservableObject {
         if let reason = inspection.failureReason {
             record("急停检查提示：\(reason)")
         }
-        let targets = inspection.targets
+        let custom = await Task.detached { CustomStopTargets.inspect(settings: settings) ?? [] }.value
+        let targets = Self.merge(inspection.targets, custom)
         guard !targets.isEmpty else { return }
         let report = await Task.detached { await ProcessStopper.stop(targets) }.value
-        record("急停结果：已终止 \(report.stopped) 个进程，失败 \(report.failed) 个。\(report.inspectionFailed ? "无法完成进程复核，请手动检查。" : "")")
+        record("急停结果：已终止 \(report.stopped) 个进程\(custom.isEmpty ? "" : "（含自定义软件 \(custom.count) 个）")，失败 \(report.failed) 个。\(report.inspectionFailed ? "无法完成进程复核，请手动检查。" : "")")
         let remaining = await Task.detached { ProcessInspector.inspect(settings: settings) }.value
         guard state.settings == settings else { return }
         updateProcessHealth(remaining)
+    }
+
+    /// 合并 Claude 目标与自定义软件目标；同一进程只保留一次。
+    private static func merge(_ claude: [ProcessIdentity], _ custom: [ProcessIdentity]) -> [ProcessIdentity] {
+        var seen = Set(claude.map(\.pid))
+        return claude + custom.filter { seen.insert($0.pid).inserted }
     }
 
     func emergencyStopAllClaude() {
@@ -427,9 +435,12 @@ final class LockgateModel: ObservableObject {
             if let reason = inspection.failureReason {
                 record("全量急停检查提示：\(reason)")
             }
-            let targets = inspection.targets
+            let custom = await Task.detached { CustomStopTargets.inspect(settings: settings) ?? [] }.value
+            let targets = Self.merge(inspection.targets, custom)
             guard !targets.isEmpty else {
-                let message = inspection.failureReason ?? "未发现已核实的 Claude Desktop / Code 进程。"
+                let message = inspection.failureReason ?? (settings.customStopApplications.isEmpty
+                    ? "未发现已核实的 Claude Desktop / Code 进程。"
+                    : "未发现已核实的 Claude Desktop / Code 进程，自定义软件也未在运行。")
                 notice = message
                 record("全量急停：\(message)")
                 return
@@ -439,7 +450,7 @@ final class LockgateModel: ObservableObject {
                 ProcessInspector.inspectAllClaude(settings: settings)
             }.value
             updateProcessHealth(remaining)
-            let message = "全量急停完成：已终止 \(report.stopped) 个进程，失败 \(report.failed) 个。"
+            let message = "全量急停完成：已终止 \(report.stopped) 个进程\(custom.isEmpty ? "" : "（含自定义软件 \(custom.count) 个）")，失败 \(report.failed) 个。"
             notice = report.inspectionFailed
                 ? "\(message) 无法完成进程复核，请手动检查。"
                 : message

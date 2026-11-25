@@ -280,6 +280,55 @@ public enum ProcessInspector {
     }
 }
 
+/// 用户自行添加、急停时一并终止的软件。只按内核给出的可执行路径匹配，不看进程名称：
+/// `.app` 条目匹配应用包内的全部可执行文件（含辅助进程），其他条目只匹配这一个可执行文件。
+public enum CustomStopTargets {
+    public static let limit = 32
+
+    public static func normalized(_ entries: [String]) -> [String] {
+        var seen: Set<String> = []
+        return entries.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+
+    public static func validationError(_ entries: [String]) -> String? {
+        if entries.count > limit { return "急停自定义软件最多添加 \(limit) 个。" }
+        for path in entries {
+            if !(path.hasPrefix("/") || path.hasPrefix("~/")) || path.contains("\0") || path.contains("\n") {
+                return "急停自定义软件请填写绝对路径或以 ~/ 开头的路径。"
+            }
+        }
+        return nil
+    }
+
+    public static func targets(in processes: [ProcessIdentity], entries: [String],
+                               uid: UInt32 = getuid()) -> [ProcessIdentity] {
+        var bundles: [String] = []
+        var executables: Set<String> = []
+        for entry in normalized(entries) where entry.hasPrefix("/") || entry.hasPrefix("~/") {
+            let path = InstallationDiscovery.canonical(entry)
+            if URL(fileURLWithPath: path).pathExtension.lowercased() == "app" {
+                bundles.append(path + "/")
+            } else {
+                executables.insert(path)
+            }
+        }
+        guard !bundles.isEmpty || !executables.isEmpty else { return [] }
+        return processes.filter { identity in
+            guard identity.uid == uid, identity.pid != getpid(), identity.executableVerified else { return false }
+            return executables.contains(identity.executable)
+                || bundles.contains { identity.executable.hasPrefix($0) }
+        }
+    }
+
+    /// 读取当前进程列表并返回匹配的自定义软件进程；读不到进程列表时返回 nil。
+    public static func inspect(settings: LockgateSettings) -> [ProcessIdentity]? {
+        guard !settings.customStopApplications.isEmpty else { return [] }
+        guard let processes = ProcessInspector.snapshot() else { return nil }
+        return targets(in: processes, entries: settings.customStopApplications)
+    }
+}
+
 public struct StopReport {
     public var stopped = 0
     public var failed = 0
