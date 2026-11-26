@@ -395,14 +395,21 @@ final class LockgateModel: ObservableObject {
             if !settings.filterPreferences.enabled, state.settings.filterPreferences.enabled || networkFilter.systemEnabled {
                 guard await networkFilter.disable() else { notice = networkFilter.status; return }
             }
-            applySettings(settings)
+            let wasLocked = state.enabled && state.lockedReason != nil
+            applySettings(settings, announce: !wasLocked)
             if settings.filterPreferences.enabled { _ = await networkFilter.enable(policy: filterPolicy) }
-            await refreshLocal()
-            await refreshExit()
+            if wasLocked {
+                // 保存即视为用户要求按新规则重新检查：与「重新检查并解锁」走同一流程，全部通过才解除锁定。
+                await attemptRecovery(successNotice: "设置已保存，按新规则检查通过，已解除锁定。不会自动重新打开 Claude。",
+                                      failurePrefix: "设置已保存，但按新规则检查仍未通过，保持锁定")
+            } else {
+                await refreshLocal()
+                await refreshExit()
+            }
         }
     }
 
-    private func applySettings(_ settings: LockgateSettings) {
+    private func applySettings(_ settings: LockgateSettings, announce: Bool = true) {
         state.settings = settings
         filterApproved = false
         revision += 1
@@ -412,8 +419,9 @@ final class LockgateModel: ObservableObject {
         lastNetworkUpdate = .distantPast
         savingError = nil
         persist()
-        record("保护规则已保存；已有锁定不会自动解除。")
-        notice = savingError ?? "设置已保存。"
+        record(state.lockedReason != nil && state.enabled
+            ? "保护规则已保存，正在按新规则重新检查，全部通过才解除锁定。" : "保护规则已保存。")
+        if let savingError { notice = savingError } else if announce { notice = "设置已保存。" }
     }
 
     var filterPolicy: FilterPolicySnapshot {
@@ -438,15 +446,28 @@ final class LockgateModel: ObservableObject {
         Task { await refreshLocal(); await refreshExit() }
     }
 
+    /// 等待进行中的后台巡检结束（最多约 15 秒）。返回 false 表示仍未结束。
+    private func waitForInFlightChecks() async -> Bool {
+        for _ in 0..<60 where checking || checkingLocal {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+        return !checking && !checkingLocal
+    }
+
     private func freshCheck() async -> Decision {
-        guard !checking, !checkingLocal else { return .wait("正在检查，请等待当前检测完成后重试。") }
+        // 后台巡检进行中时先等它结束，避免手动解锁或保存设置时恰好撞上而直接失败。
+        guard await waitForInFlightChecks() else { return .wait("正在检查，请等待当前检测完成后重试。") }
+        let started = Date()
         let capturedRevision = revision
         let oldLocalRevision = localRevision
         await refreshLocal()
-        await refreshExit()
+        // 本机检查期间后台循环可能已开始出口检测（保存设置会让它立即触发）：等它结束，
+        // 若它已在本次检查开始后产出结果就直接采用，否则再主动检测一次。
+        guard await waitForInFlightChecks() else { return .wait("正在检查，请等待当前检测完成后重试。") }
+        if lastNetworkUpdate < started { await refreshExit() }
         await networkFilter.poll(policy: filterPolicy)
         persist()
-        guard revision == capturedRevision, localRevision > oldLocalRevision,
+        guard revision == capturedRevision, localRevision > oldLocalRevision, lastNetworkUpdate >= started,
               Date().timeIntervalSince(lastNetworkUpdate) < 2 else {
             return .wait("本次检查未完成或设置发生变化，请重试。")
         }
@@ -454,35 +475,54 @@ final class LockgateModel: ObservableObject {
     }
 
     func recover() {
-        guard !recovering else { return }
+        Task { await attemptRecovery() }
+    }
+
+    /// 完整重新检查，全部通过才解除锁定。返回是否已解除；未通过时保持锁定，并把锁定原因更新为本次检查发现的异常。
+    @discardableResult
+    private func attemptRecovery(successNotice: String = "检查通过，已解除锁定。不会自动重新打开 Claude。",
+                                 failurePrefix: String = "尚不能解除锁定") async -> Bool {
+        guard !recovering else { return false }
         recovering = true
-        Task {
-            defer { recovering = false }
-            guard state.enabled else { notice = "请先启用保护，再进行手动恢复。"; return }
-            let result = await freshCheck()
-            guard savingError == nil, !stopping, state.recover(result) else {
-                notice = "尚不能解除锁定：请等待检测完成，并确保网络、出口、进程及设置全部通过。"
-                return
-            }
-            if state.settings.filterPreferences.enabled {
-                var candidate = filterPolicy
-                candidate.blocked = false
-                let capturedRevision = revision
-                await networkFilter.poll(policy: candidate)
-                guard capturedRevision == revision, state.enabled, decision.mayLaunch, !stopping,
-                      savingError == nil, networkFilter.permitsLaunch(policy: candidate) else {
-                    await networkFilter.poll(policy: filterPolicy)
-                    notice = "网络过滤器未确认放行，保持锁定：\(networkFilter.status)"
-                    return
+        defer { recovering = false }
+        guard state.enabled else { notice = "请先启用保护，再进行手动恢复。"; return false }
+        let result = await freshCheck()
+        guard savingError == nil, !stopping, state.recover(result) else {
+            switch result {
+            case .trip(let reason):
+                // 锁定原因显示的是本次检查的结果，而不是最初触发锁定时（可能已过时）的规则。
+                if state.lockedReason != nil, state.lockedReason != reason {
+                    state.lockedReason = reason
+                    persist()
+                    record("仍处于锁定，原因更新为：\(reason)")
                 }
+                notice = "\(failurePrefix)：\(reason)"
+            case .wait(let reason):
+                notice = "\(failurePrefix)：\(reason)"
+            case .allow, .warn:
+                notice = "\(failurePrefix)：请等待检测完成，并确保网络、出口、进程及设置全部通过。"
             }
-            guard state.recover(decision) else { return }
-            filterApproved = true
-            await networkFilter.poll(policy: filterPolicy)
-            persist()
-            notice = "检查通过，已解除锁定。不会自动重新打开 Claude。"
-            record(notice)
+            return false
         }
+        if state.settings.filterPreferences.enabled {
+            var candidate = filterPolicy
+            candidate.blocked = false
+            let capturedRevision = revision
+            await networkFilter.poll(policy: candidate)
+            guard capturedRevision == revision, state.enabled, decision.mayLaunch, !stopping,
+                  savingError == nil, networkFilter.permitsLaunch(policy: candidate) else {
+                await networkFilter.poll(policy: filterPolicy)
+                notice = "网络过滤器未确认放行，保持锁定：\(networkFilter.status)"
+                return false
+            }
+        }
+        guard state.recover(decision) else { return false }
+        filterApproved = true
+        await networkFilter.poll(policy: filterPolicy)
+        persist()
+        notice = successNotice
+        record(notice)
+        return true
     }
 
     func enforceLock() async {

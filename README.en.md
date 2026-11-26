@@ -83,7 +83,7 @@ IP pinning is an additional restriction; it does not override the target country
 
 Local checks run approximately every 2 seconds. Exit checks repeat approximately 10 seconds after the previous request finishes; requests have a timeout of approximately 10 seconds. Command execution and system scheduling add latency. Network and local monitoring run independently so a slow exit lookup does not block local checks.
 
-A lock remains until the user requests recovery and fresh checks pass. Changing settings, pausing protection, or reopening the app does not clear it.
+A lock remains until the user requests recovery and fresh checks pass. Pausing protection or reopening the app does not clear it. While protection is enabled and locked, "保存并重新检查" on the rules page acts as a manual recovery under the new rules: the lock is cleared only if network, exit and process checks all pass; otherwise it stays locked and the lock reason is updated to what this check found.
 
 ## Client-independent network detection
 

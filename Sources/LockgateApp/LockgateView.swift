@@ -468,7 +468,7 @@ struct LockgateView: View {
                 if let error = draft.validationError { Text(error).font(.caption).foregroundStyle(.orange) }
                 Spacer()
             }
-            Text("修改规则不会解除已有锁定。启动或解锁时若无法确认出口，门禁保持关闭。")
+            Text("保护已锁定时，保存会按新规则完整重新检查网络、出口与进程，全部通过才解除锁定，否则保持锁定并显示新的原因。启动或解锁时若无法确认出口，门禁保持关闭。")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
