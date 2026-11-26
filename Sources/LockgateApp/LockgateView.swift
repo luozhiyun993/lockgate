@@ -35,6 +35,7 @@ struct LockgateView: View {
     @State private var showBulkDomains = false
     @State private var bulkDomainText = ""
     @State private var bulkDomainMessage: String?
+    @State private var reportFeedback: String?
     private let accent = Color(red: 0.13, green: 0.37, blue: 0.78)
 
     private var mascot: NSImage {
@@ -509,6 +510,45 @@ struct LockgateView: View {
     }
 
     private var activity: some View {
+        Group {
+            card("发送给开发者", icon: "square.and.arrow.up") {
+                Text("复制或导出为纯文本，包含当前状态摘要和下方全部事件，可直接粘贴到聊天或 Issue。出口 IP 只保留前两段，用户目录路径以 ~ 代替；不含账号、密码或订阅信息。")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 10) {
+                    Button { copyDiagnosticReport() } label: { Label("复制全部", systemImage: "doc.on.doc") }
+                    Button { exportDiagnosticReport() } label: { Label("导出为文件…", systemImage: "square.and.arrow.down") }
+                    if let feedback = reportFeedback {
+                        Text(feedback).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            eventList
+        }
+    }
+
+    private func copyDiagnosticReport() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(model.diagnosticReport(), forType: .string)
+        reportFeedback = "已复制 \(model.events.count) 条事件和状态摘要。"
+    }
+
+    private func exportDiagnosticReport() {
+        let panel = NSSavePanel()
+        panel.title = "导出 Lockgate 诊断记录"
+        panel.allowedContentTypes = [.plainText]
+        let stamp = Date().formatted(.verbatim("\(year: .defaultDigits)\(month: .twoDigits)\(day: .twoDigits)-\(hour: .twoDigits(clock: .twentyFourHour, hourCycle: .zeroBased))\(minute: .twoDigits)",
+                                               timeZone: .current, calendar: .current))
+        panel.nameFieldStringValue = "Lockgate-诊断记录-\(stamp).txt"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try model.diagnosticReport().write(to: url, atomically: true, encoding: .utf8)
+            reportFeedback = "已导出到 \(url.lastPathComponent)。"
+        } catch {
+            reportFeedback = "导出失败：\(error.localizedDescription)"
+        }
+    }
+
+    private var eventList: some View {
         card("最近 200 条事件", icon: "clock") {
             ForEach(model.events) { event in
                 HStack(alignment: .top, spacing: 18) {

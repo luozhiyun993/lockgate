@@ -149,7 +149,7 @@ docs/                         需求、测试步骤与验证记录
 
 ## 数据与边界
 
-设置和锁定存于 `~/Library/Application Support/Lockgate/state.json`（首次运行会从旧版 `AgentAccountGuardian` 目录复制已有设置和锁定），事件存于同目录的 `events.json`，最多保留 200 条。目录权限 0700，文件 0600。设置包含预期 IP 和上次检测 IP；事件不记录账号凭据、订阅 URL 或完整进程参数。当前应用不读取 Claude 密码、Cookie 或 Keychain。
+设置和锁定存于 `~/Library/Application Support/Lockgate/state.json`（首次运行会从旧版 `AgentAccountGuardian` 目录复制已有设置和锁定），事件存于同目录的 `events.json`，最多保留 200 条。目录权限 0700，文件 0600。设置包含预期 IP 和上次检测 IP；事件不记录账号凭据、订阅 URL 或完整进程参数。当前应用不读取 Claude 密码、Cookie 或 Keychain。「事件记录」页可「复制全部」或「导出为文件…」，生成包含当前状态摘要与全部事件的纯文本，便于反馈问题；其中出口 IP 只保留前两段，用户目录路径以 `~` 代替。
 
 普通构建仍是进程级急停。检测到终止之间存在时间窗口；未启用可用的签名过滤扩展时，应用未运行、被强制退出或系统睡眠时无法保护。可选网络过滤的覆盖范围和未完成验收事项见上文。允许网络未知时继续运行是明确的可用性取舍，不能据此宣称故障时绝不直连。
 

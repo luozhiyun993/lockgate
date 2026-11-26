@@ -158,6 +158,43 @@ final class LockgateModel: ObservableObject {
         return "自动识别系统 HTTPS 代理或实际隧道路由，不依赖代理软件名称。"
     }
 
+    /// 便于用户转发的诊断文本：当前状态摘要 + 全部事件。出口 IP 只保留前两段，主目录路径替换为 `~`。
+    func diagnosticReport() -> String {
+        let info = Bundle.main.infoDictionary
+        let version = (info?["CFBundleShortVersionString"] as? String).map { "\($0)（build \(info?["CFBundleVersion"] as? String ?? "?")）" }
+            ?? "开发版"
+        #if arch(arm64)
+        let arch = "Apple Silicon"
+        #else
+        let arch = "Intel"
+        #endif
+        let settings = state.settings
+        let exitText: String
+        switch exit {
+        case .known(let observation):
+            exitText = "\(DiagnosticReport.maskedIP(observation.ip)) · 地区 \(observation.country) · 检测于 "
+                + observation.timestamp.formatted(date: .omitted, time: .standard)
+        case .unknown(let reason):
+            exitText = "未确认 · \(reason)"
+        }
+        let summary: [(String, String)] = [
+            ("版本", version),
+            ("系统", "\(ProcessInfo.processInfo.operatingSystemVersionString) · \(arch)"),
+            ("保护", state.enabled ? "已启用" : "观察模式"),
+            ("状态", "\(statusTitle) · \(statusDetail)"),
+            ("锁定原因", state.lockedReason ?? "无"),
+            ("目标地区", settings.country),
+            ("指定出口 IP", settings.pinEnabled ? "已启用（\(DiagnosticReport.maskedIP(settings.pinnedIP))）" : "未启用"),
+            ("网络路径", networkStatus.summary),
+            ("当前出口", exitText),
+            ("进程检查", processStatus.summary),
+            ("保护对象", [settings.protectDesktop ? "Claude Desktop" : nil, settings.protectCLI ? "Claude Code" : nil]
+                .compactMap { $0 }.joined(separator: "、").ifEmpty("无")),
+        ]
+        return DiagnosticReport.render(summary: summary,
+                                       events: events.map { DiagnosticReport.Event(time: $0.time, text: $0.text) })
+    }
+
     func record(_ text: String) {
         if events.first?.text == text { return }
         events.insert(LockgateEvent(text: text), at: 0)
@@ -672,4 +709,8 @@ final class LockgateModel: ObservableObject {
         lines.append("演练完成：真实设置、锁定状态和进程均未改变。")
         simulationOutput = lines
     }
+}
+
+private extension String {
+    func ifEmpty(_ fallback: String) -> String { isEmpty ? fallback : self }
 }
