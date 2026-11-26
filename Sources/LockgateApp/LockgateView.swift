@@ -30,6 +30,11 @@ struct LockgateView: View {
     @State private var confirmPause = false
     @State private var confirmRealTest = false
     @State private var confirmEmergencyStop = false
+    @State private var newProbeDomain = ""
+    @State private var probeDomainError: String?
+    @State private var showBulkDomains = false
+    @State private var bulkDomainText = ""
+    @State private var bulkDomainMessage: String?
     private let accent = Color(red: 0.13, green: 0.37, blue: 0.78)
 
     private var mascot: NSImage {
@@ -246,6 +251,8 @@ struct LockgateView: View {
                 }
             }
 
+            domainExitCard
+
             card("进程检查", icon: "app.badge.checkmark") {
                 Text(model.processStatus.summary)
                     .font(.system(size: 14, weight: .medium)).fixedSize(horizontal: false, vertical: true)
@@ -266,6 +273,116 @@ struct LockgateView: View {
             Label("进程级保护存在检测窗口；出口探针不代表所有域名或 IPv6 路径都已验证。", systemImage: "info.circle")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    private var domainExitCard: some View {
+        card("分域名出口", icon: "point.3.connected.trianglepath.dotted") {
+            Text("按代理分流规则分别访问各域名的 /cdn-cgi/trace，显示该域名看到的出口 IP。只有接入 Cloudflare 的域名能回显 IP，其他域名只显示能否连接与延迟；只做诊断，不参与门禁判定。")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            VStack(spacing: 0) {
+                ForEach(model.probeDomains, id: \.self) { domain in
+                    domainExitRow(domain)
+                    if domain != model.probeDomains.last { Divider() }
+                }
+            }
+            HStack(spacing: 10) {
+                TextField("添加域名，多个用逗号或空格分隔", text: $newProbeDomain)
+                    .textFieldStyle(.roundedBorder).frame(maxWidth: 280)
+                    .onSubmit(addProbeDomain)
+                Button("添加", action: addProbeDomain)
+                    .disabled(newProbeDomain.trimmingCharacters(in: .whitespaces).isEmpty)
+                Button("批量添加…") { bulkDomainMessage = nil; showBulkDomains = true }
+                    .popover(isPresented: $showBulkDomains, arrowEdge: .bottom) { bulkDomainEditor }
+                Button("添加推荐域名") { probeDomainError = model.addRecommendedProbeDomains() }
+                    .help("补充 Claude 相关的常用域名（与 cleanip.io/claude 检测的清单一致），不会删除已有域名")
+                Spacer()
+                if model.probingDomains { ProgressView().controlSize(.small) }
+                Button { Task { await model.probeDomainExits() } } label: {
+                    Label("检测", systemImage: "arrow.clockwise")
+                }.disabled(model.probingDomains || model.probeDomains.isEmpty)
+            }
+            if let error = probeDomainError {
+                Text(error).font(.caption).foregroundStyle(.orange)
+            }
+            if let note = model.domainProbeNote {
+                Text(note).font(.caption).foregroundStyle(.orange)
+            }
+            if let checked = model.domainsCheckedAt {
+                Text("最近检测 \(checked.formatted(date: .omitted, time: .standard)) · 启动时自动检测一次，之后手动触发")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func domainExitRow(_ domain: String) -> some View {
+        HStack(spacing: 12) {
+            Text(domain).font(.system(size: 13, design: .monospaced))
+                .lineLimit(1).truncationMode(.middle).frame(width: 190, alignment: .leading)
+            switch model.domainExits[domain]?.outcome {
+            case .observed(let observation):
+                Text(observation.ip).font(.system(size: 13, weight: .medium, design: .monospaced)).textSelection(.enabled)
+                Text(observation.country).font(.caption)
+                    .foregroundStyle(observation.country == model.state.settings.country ? Color.secondary : Color.red)
+                if let main = model.currentObservation?.ip {
+                    let same = main == observation.ip
+                    Text(same ? "与当前出口一致" : "与当前出口不同")
+                        .font(.system(size: 10, weight: .medium))
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background((same ? Color.green : Color.orange).opacity(0.12), in: Capsule())
+                        .foregroundStyle(same ? Color.green : Color.orange)
+                }
+            case .reachable:
+                Text("可连接 · 未接入 Cloudflare，无法回显出口 IP").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            case .unreachable:
+                Text("连接失败或超时").font(.caption).foregroundStyle(.orange)
+            case .invalidDomain:
+                Text("域名格式无效").font(.caption).foregroundStyle(.orange)
+            case nil:
+                Text(model.probingDomains ? "检测中…" : "未检测").font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if let latency = model.domainExits[domain]?.latency {
+                Text("约 \(Int((latency * 1000).rounded())) ms").font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .help("单次请求耗时，含经代理建立 TLS 连接的时间")
+            }
+            Button { model.removeProbeDomain(domain) } label: { Image(systemName: "minus.circle") }
+                .buttonStyle(.borderless).help("移除")
+        }.padding(.vertical, 7)
+    }
+
+    private var bulkDomainEditor: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("批量添加域名").font(.system(size: 13, weight: .semibold))
+            Text("每行一个，也可以用空格、逗号或分号分隔；可以直接粘贴网址，会自动取域名。")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            TextEditor(text: $bulkDomainText)
+                .font(.system(size: 12, design: .monospaced))
+                .frame(height: 180)
+                .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.primary.opacity(0.15), lineWidth: 1))
+            if let message = bulkDomainMessage {
+                Text(message).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Spacer()
+                Button("取消") { showBulkDomains = false }.keyboardShortcut(.cancelAction)
+                Button("添加") {
+                    let result = model.addProbeDomains(bulkDomainText)
+                    bulkDomainMessage = result.message
+                    // 格式无效的条目留在输入框里方便修改；全部有效时关闭。
+                    bulkDomainText = result.invalid.joined(separator: "\n")
+                    if result.invalid.isEmpty { showBulkDomains = false; probeDomainError = result.message }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(bulkDomainText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }.padding(16).frame(width: 380)
+    }
+
+    private func addProbeDomain() {
+        let result = model.addProbeDomains(newProbeDomain)
+        probeDomainError = result.message
+        newProbeDomain = result.invalid.joined(separator: ", ")
     }
 
     private var settings: some View {

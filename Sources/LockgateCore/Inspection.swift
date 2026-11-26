@@ -376,22 +376,123 @@ public enum ExitInspector {
     }
 
     public static func inspect(transport: NetworkTransport) async -> ExitHealth {
-        let config = configuration(transport: transport)
-        let session = URLSession(configuration: config)
-        defer { session.invalidateAndCancel() }
-        var request = URLRequest(url: URL(string: "https://www.cloudflare.com/cdn-cgi/trace")!)
-        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
-        do {
-            let (data, response) = try await session.data(for: request)
-            guard let response = response as? HTTPURLResponse, response.statusCode == 200,
-                  response.url?.host == "www.cloudflare.com", data.count < 16_384,
-                  let text = String(data: data, encoding: .utf8), let result = ExitObservation.parse(text) else {
-                return .unknown("出口服务未返回有效 IP 和地区；继续检测，不急停。")
-            }
-            return .known(result)
-        } catch {
-            return .unknown("网络不通或出口检测超时；继续检测，不急停。")
+        switch await trace(host: "www.cloudflare.com", transport: transport).outcome {
+        case .observed(let result): return .known(result)
+        case .respondedWithoutTrace: return .unknown("出口服务未返回有效 IP 和地区；继续检测，不急停。")
+        case .unreachable: return .unknown("网络不通或出口检测超时；继续检测，不急停。")
         }
+    }
+
+    /// 请求该域名自身的 Cloudflare trace，读取对方看到的来源 IP。
+    /// 请求按该域名走代理分流规则，所以结果是访问这个域名时的出口；只有接入 Cloudflare 的域名能回显 IP，
+    /// 其他域名只要返回了任意 HTTP 响应（TLS 已与该域名完成握手）就记为可连接。
+    public static func inspect(domain: String, transport: NetworkTransport) async -> DomainProbeResult {
+        guard let host = ProbeDomain.normalized(domain) else { return DomainProbeResult(outcome: .invalidDomain, latency: nil) }
+        let (outcome, latency) = await trace(host: host, transport: transport)
+        switch outcome {
+        case .observed(let result): return DomainProbeResult(outcome: .observed(result), latency: latency)
+        case .respondedWithoutTrace: return DomainProbeResult(outcome: .reachable, latency: latency)
+        case .unreachable: return DomainProbeResult(outcome: .unreachable, latency: nil)
+        }
+    }
+
+    private enum TraceOutcome {
+        case observed(ExitObservation)
+        /// 收到了 HTTP 响应，但不是有效的 Cloudflare trace。
+        case respondedWithoutTrace
+        case unreachable
+    }
+
+    private static func trace(host: String, transport: NetworkTransport) async -> (outcome: TraceOutcome, latency: TimeInterval) {
+        let session = URLSession(configuration: configuration(transport: transport))
+        defer { session.invalidateAndCancel() }
+        var request = URLRequest(url: URL(string: "https://\(host)/cdn-cgi/trace")!)
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        let started = Date()
+        do {
+            // 不跟随重定向：跳到别的域名会走另一条分流规则，测到的就不是这个域名的出口。
+            let (data, response) = try await session.data(for: request, delegate: RejectRedirects())
+            let latency = Date().timeIntervalSince(started)
+            guard let response = response as? HTTPURLResponse else { return (.unreachable, latency) }
+            guard response.statusCode == 200, response.url?.host?.lowercased() == host, data.count < 16_384,
+                  let text = String(data: data, encoding: .utf8), let result = ExitObservation.parse(text) else {
+                return (.respondedWithoutTrace, latency)
+            }
+            return (.observed(result), latency)
+        } catch {
+            return (.unreachable, Date().timeIntervalSince(started))
+        }
+    }
+}
+
+public struct DomainProbeResult: Equatable {
+    public enum Outcome: Equatable {
+        /// 接入 Cloudflare，回显了出口 IP。
+        case observed(ExitObservation)
+        /// 有 HTTP 响应但未接入 Cloudflare，无法回显 IP。
+        case reachable
+        case unreachable
+        case invalidDomain
+    }
+
+    public let outcome: Outcome
+    /// 请求耗时（秒），仅在收到响应时有值。
+    public let latency: TimeInterval?
+
+    public init(outcome: Outcome, latency: TimeInterval?) {
+        self.outcome = outcome
+        self.latency = latency
+    }
+}
+
+private final class RejectRedirects: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
+    }
+}
+
+public enum ProbeDomain {
+    /// 推荐检测清单，与 cleanip.io/claude 实际探测的域名一致。
+    public static let recommended = [
+        "claude.ai", "api.anthropic.com", "platform.claude.com", "anthropic.com", "claude.com",
+        "claudeusercontent.com", "claude.app", "clau.de", "claude.dev", "claude.site", "claudeacademy.com",
+        "claude.new", "antspace.dev", "claudepages.dev", "claudestudio.com", "anthropic.auth0.com",
+        "hcaptcha.com", "challenges.cloudflare.com", "withpersona.com", "yoti.com",
+    ]
+
+    /// 拆分批量输入（换行、空白、中英文逗号、分号、顿号均可分隔），返回去重后的规范化域名和无法识别的条目，均保持原顺序。
+    public static func parseList(_ text: String) -> (domains: [String], invalid: [String]) {
+        let separators = CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ",;，；、"))
+        var domains: [String] = []
+        var invalid: [String] = []
+        for token in text.components(separatedBy: separators) where !token.isEmpty {
+            if let domain = normalized(token) {
+                if !domains.contains(domain) { domains.append(domain) }
+            } else if !invalid.contains(token) {
+                invalid.append(token)
+            }
+        }
+        return (domains, invalid)
+    }
+
+    /// 接受 `withpersona.com`、`https://withpersona.com/path` 等写法，返回小写主机名；IP、单段名称和非 ASCII 域名返回 nil。
+    public static func normalized(_ input: String) -> String? {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !trimmed.isEmpty else { return nil }
+        let components = URLComponents(string: trimmed.contains("://") ? trimmed : "https://" + trimmed)
+        guard let components, components.scheme == "https" || components.scheme == "http",
+              components.user == nil, components.password == nil, components.port == nil,
+              var host = components.host, !host.isEmpty else { return nil }
+        if host.hasSuffix(".") { host.removeLast() }
+        let labels = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard host.count <= 253, labels.count >= 2,
+              let last = labels.last, !last.allSatisfy(\.isNumber) else { return nil }
+        for label in labels {
+            guard (1...63).contains(label.count), label.first != "-", label.last != "-",
+                  label.utf8.allSatisfy({ (97...122).contains($0) || (48...57).contains($0) || $0 == 45 }) else { return nil }
+        }
+        return host
     }
 }
 

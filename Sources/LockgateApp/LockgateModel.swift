@@ -26,6 +26,14 @@ final class LockgateModel: ObservableObject {
     @Published var savingError: String?
     @Published var simulationOutput: [String] = []
     @Published var lastChecked: Date?
+    /// 分域名出口：只做诊断展示，不参与门禁判定，也不写入保护规则。
+    @Published private(set) var probeDomains: [String]
+    @Published private(set) var domainExits: [String: DomainProbeResult] = [:]
+    @Published private(set) var probingDomains = false
+    @Published private(set) var domainsCheckedAt: Date?
+    @Published private(set) var domainProbeNote: String?
+    private var initialDomainProbeStarted = false
+    private static let probeDomainsKey = "probeDomains"
     private let store = StateStore()
     private var localTask: Task<Void, Never>?
     private var networkTask: Task<Void, Never>?
@@ -40,6 +48,10 @@ final class LockgateModel: ObservableObject {
     private var lastConfirmedTransport: NetworkTransport?
 
     init() {
+        let savedDomains = UserDefaults.standard.stringArray(forKey: Self.probeDomainsKey)
+            ?? ProbeDomain.recommended
+        var seen = Set<String>()
+        probeDomains = savedDomains.compactMap(ProbeDomain.normalized).filter { seen.insert($0).inserted }
         do {
             state = try store.load()
             state.enabled = false
@@ -196,6 +208,11 @@ final class LockgateModel: ObservableObject {
                 notice = state.lockedReason ?? ""
             }
             lastConfirmedTransport = newTransport
+            // 启动后确认到网络路径时自动检测一次分域名出口，之后只手动触发。
+            if !initialDomainProbeStarted {
+                initialDomainProbeStarted = true
+                Task { await probeDomainExits() }
+            }
         }
         if connection.health != local { record("网络检查：\(connection.health.summary)") }
         local = connection.health
@@ -242,6 +259,79 @@ final class LockgateModel: ObservableObject {
         if case .known(let observation) = result { state.lastIP = observation.ip }
         persist()
         if state.enabled, state.lockedReason != nil { await enforceLock() }
+    }
+
+    /// 添加一个或多个域名。返回无法识别的条目（供界面保留修改）和提示；全部添加成功时提示为 nil。
+    func addProbeDomains(_ text: String) -> (invalid: [String], message: String?) {
+        let parsed = ProbeDomain.parseList(text)
+        let added = parsed.domains.filter { !probeDomains.contains($0) }
+        let duplicates = parsed.domains.count - added.count
+        if !added.isEmpty {
+            probeDomains.append(contentsOf: added)
+            UserDefaults.standard.set(probeDomains, forKey: Self.probeDomainsKey)
+        }
+        var parts: [String] = []
+        if !added.isEmpty, duplicates > 0 || !parsed.invalid.isEmpty { parts.append("已添加 \(added.count) 个") }
+        if duplicates > 0 { parts.append("\(duplicates) 个已在列表中") }
+        if !parsed.invalid.isEmpty { parts.append("\(parsed.invalid.count) 个格式无效：\(parsed.invalid.joined(separator: "、"))") }
+        if parsed.domains.isEmpty, parsed.invalid.isEmpty { parts.append("没有可添加的域名") }
+        return (parsed.invalid, parts.isEmpty ? nil : parts.joined(separator: "；") + "。")
+    }
+
+    /// 把推荐清单中尚未添加的域名追加到列表末尾，不删除已有域名。
+    func addRecommendedProbeDomains() -> String? {
+        addProbeDomains(ProbeDomain.recommended.joined(separator: "\n")).message
+    }
+
+    func removeProbeDomain(_ domain: String) {
+        probeDomains.removeAll { $0 == domain }
+        domainExits[domain] = nil
+        UserDefaults.standard.set(probeDomains, forKey: Self.probeDomainsKey)
+    }
+
+    func probeDomainExits() async {
+        guard !probingDomains, !probeDomains.isEmpty else { return }
+        guard let requestTransport = transport else {
+            domainProbeNote = "尚未确认系统代理或隧道路径，暂不发送探针。"
+            return
+        }
+        probingDomains = true
+        domainProbeNote = nil
+        defer { probingDomains = false }
+        let domains = probeDomains
+        // 域名数量不限，但同时最多 8 个请求，避免列表很长时一次性向代理打出大量连接。
+        let results = await withTaskGroup(of: (String, DomainProbeResult).self) { group in
+            var pending = domains.makeIterator()
+            func enqueueNext() {
+                guard let domain = pending.next() else { return }
+                group.addTask { (domain, await ExitInspector.inspect(domain: domain, transport: requestTransport)) }
+            }
+            for _ in 0..<8 { enqueueNext() }
+            var collected: [String: DomainProbeResult] = [:]
+            for await (domain, result) in group {
+                collected[domain] = result
+                enqueueNext()
+            }
+            return collected
+        }
+        guard transport == requestTransport else {
+            domainProbeNote = "检测期间网络路径发生变化，结果已丢弃，请重新检测。"
+            return
+        }
+        domainExits = results
+        domainsCheckedAt = Date()
+        var ips = Set<String>()
+        var reachable = 0
+        var failed = 0
+        for result in results.values {
+            switch result.outcome {
+            case .observed(let observation): ips.insert(observation.ip)
+            case .reachable: reachable += 1
+            case .unreachable, .invalidDomain: failed += 1
+            }
+        }
+        record("分域名出口检测完成：\(domains.count) 个域名，观察到 \(ips.count) 个不同出口 IP；"
+            + "\(reachable) 个可连接但无法回显 IP，\(failed) 个连接失败。")
     }
 
     private func recordNetworkResult(_ observation: ExitObservation) {

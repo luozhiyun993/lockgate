@@ -144,6 +144,59 @@ final class NetworkInspectionTests: XCTestCase {
         guard case .unknown = result else { return XCTFail("Rejected proxy must not return direct exit success") }
     }
 
+    func testProbeDomainNormalization() {
+        XCTAssertEqual(ProbeDomain.normalized("withpersona.com"), "withpersona.com")
+        XCTAssertEqual(ProbeDomain.normalized("  WithPersona.COM. "), "withpersona.com")
+        XCTAssertEqual(ProbeDomain.normalized("https://api.anthropic.com/v1/messages?x=1"), "api.anthropic.com")
+        XCTAssertEqual(ProbeDomain.normalized("claude.ai/new"), "claude.ai")
+        for input in ["", "localhost", "8.8.8.8", "https://user@claude.ai", "claude.ai:8443", "ftp://claude.ai",
+                      "-bad.com", "bad-.com", "a..com", "例子.中国", "under_score.com"] {
+            XCTAssertNil(ProbeDomain.normalized(input), input)
+        }
+    }
+
+    func testProbeDomainListSplitsDedupesAndKeepsInvalidEntries() {
+        let text = "withpersona.com\nhttps://claude.ai/new, api.anthropic.com；Claude.AI\n\n  8.8.8.8 、bad_name.com;withpersona.com"
+        let parsed = ProbeDomain.parseList(text)
+        XCTAssertEqual(parsed.domains, ["withpersona.com", "claude.ai", "api.anthropic.com"])
+        XCTAssertEqual(parsed.invalid, ["8.8.8.8", "bad_name.com"])
+        XCTAssertTrue(ProbeDomain.parseList(" \n ,; ").domains.isEmpty)
+        XCTAssertTrue(ProbeDomain.parseList(" \n ,; ").invalid.isEmpty)
+    }
+
+    func testDomainProbeConnectsToThatDomainThroughProxy() async throws {
+        let listener = try NWListener(using: .tcp, on: .any)
+        let ready = expectation(description: "Proxy listening")
+        let requested = expectation(description: "HTTPS CONNECT received")
+        requested.assertForOverFulfill = false
+        listener.stateUpdateHandler = { state in
+            if case .ready = state { ready.fulfill() }
+        }
+        listener.newConnectionHandler = { connection in
+            connection.start(queue: .global())
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 8192) { data, _, _, _ in
+                if let data, !data.isEmpty {
+                    XCTAssertTrue(String(decoding: data, as: UTF8.self).hasPrefix("CONNECT withpersona.com:443"))
+                    requested.fulfill()
+                }
+                connection.send(content: Data("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".utf8),
+                    completion: .contentProcessed { _ in connection.cancel() })
+            }
+        }
+        listener.start(queue: .global())
+        defer { listener.cancel() }
+        await fulfillment(of: [ready], timeout: 3)
+        let port = try XCTUnwrap(listener.port)
+        let proxy = try XCTUnwrap(ProxyEndpoint(host: "127.0.0.1", port: Int(port.rawValue)))
+        let result = await ExitInspector.inspect(domain: "https://WithPersona.com/", transport: .systemHTTPS(proxy))
+        await fulfillment(of: [requested], timeout: 3)
+        // 代理拒绝 CONNECT 不是目标域名的响应，不能算作可连接，也不能回退直连。
+        XCTAssertEqual(result, DomainProbeResult(outcome: .unreachable, latency: nil))
+        let invalid = await ExitInspector.inspect(domain: "8.8.8.8", transport: .systemHTTPS(proxy))
+        XCTAssertEqual(invalid, DomainProbeResult(outcome: .invalidDomain, latency: nil))
+        XCTAssertTrue(ProbeDomain.recommended.allSatisfy { ProbeDomain.normalized($0) == $0 })
+    }
+
     func testLocalBypassOnlyCoversLoopbackAndPrivateRanges() {
         for pattern in ["127.0.0.1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16",
                         "192.168.1.20", "::1", "fd00::1", "fe80::1"] {
